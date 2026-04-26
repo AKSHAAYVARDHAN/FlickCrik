@@ -8,6 +8,7 @@ import {
   TeamId,
   TurnQueue,
 } from '../types';
+import { buildMatchSummary } from './matchSummary';
 
 function biasedRandom(): number {
   const weights = [1, 2, 3, 4, 3, 2];
@@ -295,8 +296,12 @@ export const processTurn = (room: Room): Partial<Room> | null => {
         nextStatus = GameStatus.FINISHED;
         nextGameState.status = GameStatus.FINISHED;
         nextGameState.over = true;
-        nextGameState.winner = determineWinner(nextGameState);
-        nextGameState.mvpPlayerId = findMVP(nextPlayers);
+        const summary = buildMatchSummary(nextPlayers, nextGameState);
+        nextGameState.winner = summary.winner;
+        nextGameState.teamSummary = summary.teamSummary;
+        nextGameState.playerStats = summary.playerStats;
+        nextGameState.mvp = summary.mvp;
+        nextGameState.finishedAt = Date.now();
         nextGameState.currentBatterId = null;
         nextGameState.currentBowlerId = null;
         syncCurrentTurn(nextGameState);
@@ -314,8 +319,15 @@ export const processTurn = (room: Room): Partial<Room> | null => {
       nextStatus = GameStatus.FINISHED;
       nextGameState.status = GameStatus.FINISHED;
       nextGameState.over = true;
-      nextGameState.winner = battingTeam;
-      nextGameState.mvpPlayerId = findMVP(nextPlayers);
+      const summary = buildMatchSummary(nextPlayers, {
+        ...nextGameState,
+        winner: battingTeam,
+      });
+      nextGameState.winner = summary.winner;
+      nextGameState.teamSummary = summary.teamSummary;
+      nextGameState.playerStats = summary.playerStats;
+      nextGameState.mvp = summary.mvp;
+      nextGameState.finishedAt = Date.now();
       nextGameState.currentBatterId = null;
       nextGameState.currentBowlerId = null;
       syncCurrentTurn(nextGameState);
@@ -376,34 +388,3 @@ export const processTurn = (room: Room): Partial<Room> | null => {
     status: nextStatus,
   };
 };
-
-function determineWinner(gameState: GameState): TeamId | 'TIE' {
-  const { teamScores, battingTeam, target } = gameState;
-  const bowlingTeam = otherTeam(battingTeam);
-
-  if (gameState.currentInnings === 2 && target !== null) {
-    const chaseScore = teamScores[battingTeam];
-    const defendingScore = target - 1;
-    if (chaseScore > defendingScore) return battingTeam;
-    if (chaseScore === defendingScore) return 'TIE';
-    return bowlingTeam;
-  }
-
-  if (teamScores.A > teamScores.B) return 'A';
-  if (teamScores.B > teamScores.A) return 'B';
-  return 'TIE';
-}
-
-function findMVP(players: Record<string, Player>): string | null {
-  let topScore = -1;
-  let mvpPlayerId: string | null = null;
-
-  for (const [playerId, player] of Object.entries(players)) {
-    if (!player.isBot && player.score > topScore) {
-      topScore = player.score;
-      mvpPlayerId = playerId;
-    }
-  }
-
-  return mvpPlayerId;
-}

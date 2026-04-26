@@ -70,6 +70,32 @@ export interface TeamData {
   wickets: number; // remaining wickets (starts = number of players in team)
 }
 
+export interface TeamSummary {
+  team: TeamId;
+  runs: number;
+  wicketsLost: number;
+  ballsPlayed: number;
+  oversPlayed: string;
+}
+
+export interface PlayerMatchStats {
+  playerId: string;
+  team: TeamId;
+  runsScored: number;
+  ballsFaced: number;
+  wicketsTaken: number;
+  runsConceded: number;
+  ballsBowled: number;
+  oversBowled: string;
+}
+
+export interface MatchMVP {
+  playerId: string;
+  runs: number;
+  wickets: number;
+  rating: number;
+}
+
 export interface GameState {
   status: GameStatus;
   currentInnings: 1 | 2;
@@ -103,7 +129,10 @@ export interface GameState {
   latestEvent: MatchEvent | null;
   matchEvents: MatchEvent[];
   eventSequence: number;
-  mvpPlayerId: string | null;
+  teamSummary: Record<TeamId, TeamSummary>;
+  playerStats: Record<string, PlayerMatchStats>;
+  mvp: MatchMVP | null;
+  finishedAt: number | null;
 }
 
 export interface TossState {

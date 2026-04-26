@@ -18,10 +18,10 @@ import {
   GameControls,
   InningsBadge,
   MatchupBanner,
-  ResultOverlay,
   TeamScoreboard,
 } from '../components/GameComponents';
 import InningsAnnouncement, { type AnnouncementData } from '../components/InningsAnnouncement';
+import MatchSummary from '../components/MatchSummary';
 import MatchEventPopup from '../components/MatchEventPopup';
 import MainLayout from '../components/layout/MainLayout';
 import { Badge, Button, Card, cn, InputField } from '../components/UI';
@@ -1445,8 +1445,6 @@ export default function Game() {
   }
 
   if (room.status === GameStatus.FINISHED) {
-    const mvp = room.gameState.mvpPlayerId ? room.players[room.gameState.mvpPlayerId] : null;
-
     return (
       <>
         <MainLayout
@@ -1458,15 +1456,11 @@ export default function Game() {
           senderName={chatSenderName}
           title="Match result"
         >
-          <ResultOverlay
-            winner={room.gameState.winner}
+          <MatchSummary
             myTeam={me?.team || null}
-            gameState={room.gameState}
-            teamNames={room.teamNames}
-            players={room.players}
-            mvp={mvp}
-            onRestart={isHost ? () => withLoad(() => resetRoom(roomId!)) : undefined}
-            isHost={isHost}
+            onReturnToLobby={() => withLoad(() => resetRoom(roomId!))}
+            returning={actionLoading}
+            room={room}
           />
         </MainLayout>
         {announcementOverlay}

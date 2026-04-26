@@ -21,6 +21,12 @@ import {
   TossState,
 } from '../types';
 import { processTurn } from '../gameLogic/engine';
+import {
+  buildEmptyPlayerStatsMap,
+  buildMatchSummary,
+  createEmptyTeamSummary,
+  SUMMARY_VISIBILITY_DELAY_MS,
+} from '../gameLogic/matchSummary';
 import { DEFAULT_TEAM_NAMES, sanitizeTeamName } from '../utils/teamNames';
 
 const ROOMS_COLLECTION = 'rooms';
@@ -135,7 +141,13 @@ function makeDefaultGameState(): GameState {
     latestEvent: null,
     matchEvents: [],
     eventSequence: 0,
-    mvpPlayerId: null,
+    teamSummary: {
+      A: createEmptyTeamSummary('A'),
+      B: createEmptyTeamSummary('B'),
+    },
+    playerStats: {},
+    mvp: null,
+    finishedAt: null,
   };
 }
 
@@ -197,6 +209,28 @@ function normalizeRoomData(room: Room): Room {
   const status = room.status ?? room.gameState?.status ?? GameStatus.LOBBY;
   const baseState = makeDefaultGameState();
   const battingTeam = room.gameState?.battingTeam ?? baseState.battingTeam;
+  const players = normalizeCaptains(room.players ?? {});
+  const basePlayerStats = buildEmptyPlayerStatsMap(players);
+  const shouldBackfillFinishedSummary =
+    status === GameStatus.FINISHED &&
+    (
+      !room.gameState?.mvp ||
+      !room.gameState?.teamSummary ||
+      Object.keys(room.gameState?.playerStats ?? {}).length === 0
+    );
+  const computedSummary = shouldBackfillFinishedSummary
+    ? buildMatchSummary(players, {
+        ballHistory: room.gameState?.ballHistory ?? [],
+        teamScores: {
+          A: room.gameState?.teamScores?.A ?? 0,
+          B: room.gameState?.teamScores?.B ?? 0,
+        },
+        currentInnings: room.gameState?.currentInnings ?? 1,
+        battingTeam,
+        target: room.gameState?.target ?? null,
+        winner: room.gameState?.winner ?? null,
+      })
+    : null;
 
   return {
     ...room,
@@ -205,7 +239,7 @@ function normalizeRoomData(room: Room): Room {
       ...makeDefaultTeamNames(),
       ...(room.teamNames ?? {}),
     },
-    players: normalizeCaptains(room.players ?? {}),
+    players,
     gameState: {
       ...baseState,
       ...room.gameState,
@@ -254,7 +288,26 @@ function normalizeRoomData(room: Room): Room {
       latestEvent: room.gameState?.latestEvent ?? null,
       matchEvents: room.gameState?.matchEvents ?? [],
       eventSequence: room.gameState?.eventSequence ?? 0,
-      mvpPlayerId: room.gameState?.mvpPlayerId ?? null,
+      teamSummary:
+        room.gameState?.teamSummary ??
+        computedSummary?.teamSummary ?? {
+          A: createEmptyTeamSummary('A'),
+          B: createEmptyTeamSummary('B'),
+        },
+      playerStats:
+        Object.keys(room.gameState?.playerStats ?? {}).length > 0
+          ? Object.fromEntries(
+              Object.entries(basePlayerStats).map(([playerId, stats]) => [
+                playerId,
+                {
+                  ...stats,
+                  ...(room.gameState?.playerStats?.[playerId] ?? {}),
+                },
+              ])
+            ) as GameState['playerStats']
+          : computedSummary?.playerStats ?? basePlayerStats,
+      mvp: room.gameState?.mvp ?? computedSummary?.mvp ?? null,
+      finishedAt: room.gameState?.finishedAt ?? null,
     },
   };
 }
@@ -270,6 +323,7 @@ function makeTossGameState(players: Record<string, Player>): GameState {
       A: Object.values(players).filter((player) => player.team === 'A').length,
       B: Object.values(players).filter((player) => player.team === 'B').length,
     },
+    playerStats: buildEmptyPlayerStatsMap(players),
   };
 }
 
@@ -315,6 +369,7 @@ function makePlayingGameState(room: Room, battingTeam: TeamId, decision: TossDec
       tossCompleted: room.gameState.toss.tossCompleted,
       completedAt: room.gameState.toss.completedAt,
     },
+    playerStats: buildEmptyPlayerStatsMap(players),
   };
 }
 
@@ -947,31 +1002,45 @@ export const subscribeToRoom = (
 
 export const resetRoom = async (roomId: string): Promise<void> => {
   const roomRef = doc(db, ROOMS_COLLECTION, roomId);
-  const snap = await getDoc(roomRef);
-  if (!snap.exists()) throw new Error('Room not found');
-
-  const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
-  const resetPlayers: Record<string, Player> = {};
-  let orderA = 0;
-  let orderB = 0;
-
-  for (const [playerId, player] of Object.entries(room.players)) {
-    if (player.isBot) continue;
-
-    resetPlayers[playerId] = {
-      ...player,
-      score: 0,
-      isOut: false,
-      selection: null,
-      order: player.team === 'A' ? orderA++ : orderB++,
-    };
-  }
-
   try {
-    await updateDoc(roomRef, {
-      status: GameStatus.LOBBY,
-      players: normalizeCaptains(resetPlayers),
-      gameState: makeDefaultGameState(),
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      if (room.status === GameStatus.LOBBY) {
+        return;
+      }
+      if (room.status !== GameStatus.FINISHED) {
+        throw new Error('Can only return to the lobby after the match ends');
+      }
+
+      const finishedAt = room.gameState.finishedAt ?? 0;
+      if (finishedAt && Date.now() - finishedAt < SUMMARY_VISIBILITY_DELAY_MS) {
+        throw new Error('Summary is still syncing. Please wait a moment.');
+      }
+
+      const resetPlayers: Record<string, Player> = {};
+      let orderA = 0;
+      let orderB = 0;
+
+      for (const [playerId, player] of Object.entries(room.players)) {
+        if (player.isBot) continue;
+
+        resetPlayers[playerId] = {
+          ...player,
+          score: 0,
+          isOut: false,
+          selection: null,
+          order: player.team === 'A' ? orderA++ : orderB++,
+        };
+      }
+
+      transaction.update(roomRef, {
+        status: GameStatus.LOBBY,
+        players: normalizeCaptains(resetPlayers),
+        gameState: makeDefaultGameState(),
+      });
     });
   } catch (error) {
     handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
