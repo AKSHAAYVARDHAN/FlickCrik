@@ -69,6 +69,7 @@ export default function LeftSidebar({
   );
   const activePlayers = allPlayers.filter((player) => player.team === activeTeam);
   const tone = teamTone(activeTeam);
+  const wicketsLost = Math.max(0, activePlayers.length - room.gameState.teamWickets[activeTeam]);
   const wicketsByBowler = useMemo(() => {
     return (room.gameState.ballHistory || []).reduce<Record<string, number>>((totals, ball) => {
       if (!ball.isOut) return totals;
@@ -143,7 +144,7 @@ export default function LeftSidebar({
             <div className="text-right">
               <div className="flex items-center justify-end gap-1.5 text-xs font-bold text-copy-secondary">
                 <Shield className="h-3.5 w-3.5" />
-                {room.gameState.teamWickets[activeTeam]}/{activePlayers.length}
+                {wicketsLost}/{activePlayers.length}
               </div>
               <div className="mt-0.5 text-[10px] font-semibold uppercase text-copy-muted">wickets</div>
             </div>

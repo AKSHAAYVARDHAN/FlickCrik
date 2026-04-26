@@ -1,33 +1,29 @@
+import {
+  BallResult,
+  GameState,
+  GameStatus,
+  MatchEvent,
+  Player,
+  Room,
+  TeamId,
+  TurnQueue,
+} from '../types';
 
-import { Room, Player, GameStatus, GameState, TeamId, BallResult } from '../types';
-
-// ─── Bot Logic ────────────────────────────────────────────────────────────────
-
-/** Biased-random fallback pick: slightly weighted toward middle numbers */
 function biasedRandom(): number {
-  const weights = [1, 2, 3, 4, 3, 2]; // 1→w1, 2→w2, 3→w3, 4→w4, 5→w3, 6→w2
+  const weights = [1, 2, 3, 4, 3, 2];
   const total = weights.reduce((a, b) => a + b, 0);
   let rand = Math.random() * total;
-  for (let i = 0; i < weights.length; i++) {
+
+  for (let i = 0; i < weights.length; i += 1) {
     rand -= weights[i];
     if (rand <= 0) return i + 1;
   }
+
   return 3;
 }
 
-/** Legacy alias kept for any leftover call-sites */
 export const botPick = biasedRandom;
 
-/**
- * Intelligent AI pick that reads match history to make a prediction.
- *
- * - **Batting** (want to NOT match the bowler): pick the number the opponent
- *   has bowled *least* often — least likely to be repeated.
- * - **Bowling** (want to MATCH the batter): pick the number the opponent
- *   has batted *most* often — most likely pattern to exploit.
- *
- * Falls back to biasedRandom when there's insufficient history.
- */
 export function aiPick(
   role: 'batter' | 'bowler',
   history: BallResult[],
@@ -35,20 +31,18 @@ export function aiPick(
 ): number {
   if (history.length < 2) return biasedRandom();
 
-  // Build frequency table of opponent's choices
   const freq: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
 
   for (const ball of history) {
     if (role === 'batter') {
-      // Opponent is the bowler — track what they threw
       if (ball.bowlingPlayerId !== myId) {
         freq[ball.bowler] = (freq[ball.bowler] || 0) + 1;
       }
-    } else {
-      // Opponent is the batter — track what they scored with
-      if (ball.battingPlayerId !== myId) {
-        freq[ball.batter] = (freq[ball.batter] || 0) + 1;
-      }
+      continue;
+    }
+
+    if (ball.battingPlayerId !== myId) {
+      freq[ball.batter] = (freq[ball.batter] || 0) + 1;
     }
   }
 
@@ -56,173 +50,262 @@ export function aiPick(
   if (total === 0) return biasedRandom();
 
   if (role === 'batter') {
-    // Pick the number bowled *least* — minimise chance of a match
     const minCount = Math.min(...Object.values(freq));
     const candidates = Object.entries(freq)
-      .filter(([, cnt]) => cnt === minCount)
-      .map(([n]) => Number(n));
-    return candidates[Math.floor(Math.random() * candidates.length)];
-  } else {
-    // Pick the number batted *most* — maximise chance of a match (wicket)
-    const maxCount = Math.max(...Object.values(freq));
-    const candidates = Object.entries(freq)
-      .filter(([, cnt]) => cnt === maxCount)
-      .map(([n]) => Number(n));
+      .filter(([, count]) => count === minCount)
+      .map(([value]) => Number(value));
     return candidates[Math.floor(Math.random() * candidates.length)];
   }
+
+  const maxCount = Math.max(...Object.values(freq));
+  const candidates = Object.entries(freq)
+    .filter(([, count]) => count === maxCount)
+    .map(([value]) => Number(value));
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-// ─── Queue Helpers ────────────────────────────────────────────────────────────
+function otherTeam(team: TeamId): TeamId {
+  return team === 'A' ? 'B' : 'A';
+}
 
-/**
- * Get the next player index in a round-robin queue of playerIds.
- * Returns the index of the *first alive/non-out* player starting from
- * the one AFTER currentIdx (wraps around).
- */
-function nextAliveIdx(
+function clonePlayers(players: Record<string, Player>) {
+  return Object.fromEntries(
+    Object.entries(players).map(([id, player]) => [id, { ...player }])
+  ) as Record<string, Player>;
+}
+
+function cloneQueue(queue: TurnQueue): TurnQueue {
+  return {
+    A: [...queue.A],
+    B: [...queue.B],
+  };
+}
+
+function getQueue(gameState: GameState, team: TeamId): string[] {
+  const nextQueue = gameState.playersQueue?.[team];
+  if (Array.isArray(nextQueue) && nextQueue.length > 0) return nextQueue;
+  return gameState.turnQueue[team] ?? [];
+}
+
+function nextAliveBatterId(
   queue: string[],
-  currentIdx: number,
+  currentPlayerId: string,
   players: Record<string, Player>
-): number {
-  const len = queue.length;
-  for (let i = 1; i <= len; i++) {
-    const idx = (currentIdx + i) % len;
-    const pid = queue[idx];
-    if (pid && players[pid] && !players[pid].isOut) return idx;
+): string | null {
+  if (queue.length === 0) return null;
+
+  const currentIndex = Math.max(queue.indexOf(currentPlayerId), 0);
+  for (let offset = 1; offset <= queue.length; offset += 1) {
+    const candidateId = queue[(currentIndex + offset) % queue.length];
+    if (candidateId && players[candidateId] && !players[candidateId].isOut) {
+      return candidateId;
+    }
   }
-  return -1; // all out
+
+  return null;
 }
 
-/** 
- * Rotate bowling queue — always loops (bowlers keep taking turns even if "out" as batters).
- * Returns new index after advancing by 1.
- */
-function nextBowlerIdx(queue: string[], currentIdx: number): number {
-  return (currentIdx + 1) % queue.length;
+function selectNextBowlerId(
+  queue: string[],
+  currentBowlerId: string | null,
+  blockedBowlerId: string | null,
+  players: Record<string, Player>
+): string | null {
+  const available = queue.filter((playerId) => Boolean(players[playerId]));
+  if (available.length === 0) return null;
+  if (available.length === 1) return available[0];
+
+  const startIndex = currentBowlerId ? Math.max(available.indexOf(currentBowlerId), 0) : -1;
+
+  for (let offset = 1; offset <= available.length; offset += 1) {
+    const candidateId = available[(startIndex + offset + available.length) % available.length];
+    if (candidateId !== blockedBowlerId) {
+      return candidateId;
+    }
+  }
+
+  return available[0];
 }
 
-// ─── Main Turn Processor ──────────────────────────────────────────────────────
+function syncCurrentTurn(gameState: GameState) {
+  if (!gameState.currentBatterId || !gameState.currentBowlerId) {
+    gameState.currentTurn = null;
+    return;
+  }
+
+  gameState.currentTurn = {
+    battingPlayerId: gameState.currentBatterId,
+    bowlingPlayerId: gameState.currentBowlerId,
+  };
+}
+
+function pushEvent(
+  gameState: GameState,
+  event: Omit<MatchEvent, 'id' | 'sequence' | 'createdAt'>
+) {
+  const nextSequence = (gameState.eventSequence ?? 0) + 1;
+  const nextEvent: MatchEvent = {
+    ...event,
+    id: `event_${nextSequence}`,
+    sequence: nextSequence,
+    createdAt: Date.now(),
+  };
+
+  const history = [...(gameState.matchEvents ?? []), nextEvent].slice(-12);
+  gameState.eventSequence = nextSequence;
+  gameState.latestEvent = nextEvent;
+  gameState.matchEvents = history;
+}
+
+function startNextInnings(
+  gameState: GameState,
+  players: Record<string, Player>,
+  nextBattingTeam: TeamId
+) {
+  const nextBowlingTeam = otherTeam(nextBattingTeam);
+  const battingQueue = getQueue(gameState, nextBattingTeam);
+  const bowlingQueue = getQueue(gameState, nextBowlingTeam);
+  const openingBatterId = battingQueue.find((playerId) => players[playerId] && !players[playerId].isOut) ?? null;
+  const openingBowlerId = selectNextBowlerId(bowlingQueue, null, null, players);
+
+  gameState.currentInnings = 2;
+  gameState.battingTeam = nextBattingTeam;
+  gameState.bowlingTeam = nextBowlingTeam;
+  gameState.target = gameState.teamScores[otherTeam(nextBattingTeam)] + 1;
+  gameState.ballCount = 0;
+  gameState.overNumber = 1;
+  gameState.lastBowlerId = null;
+  gameState.currentBatterId = openingBatterId;
+  gameState.currentBowlerId = openingBowlerId;
+  syncCurrentTurn(gameState);
+}
 
 export const processTurn = (room: Room): Partial<Room> | null => {
   const { gameState, players } = room;
-  const { currentTurn, battingTeam } = gameState;
+  const currentBatterId = gameState.currentBatterId ?? gameState.currentTurn?.battingPlayerId ?? null;
+  const currentBowlerId = gameState.currentBowlerId ?? gameState.currentTurn?.bowlingPlayerId ?? null;
 
-  if (!currentTurn) return null;
+  if (!currentBatterId || !currentBowlerId) return null;
 
-  const { battingPlayerId, bowlingPlayerId } = currentTurn;
-  const batter = players[battingPlayerId];
-  const bowler = players[bowlingPlayerId];
-
+  const batter = players[currentBatterId];
+  const bowler = players[currentBowlerId];
   if (!batter || !bowler) return null;
   if (batter.selection === null || bowler.selection === null) return null;
 
-  const batterSel = batter.selection;
-  const bowlerSel = bowler.selection;
-  const isOut = batterSel === bowlerSel;
+  const batterSelection = batter.selection;
+  const bowlerSelection = bowler.selection;
+  const isOut = batterSelection === bowlerSelection;
+  const battingTeam = gameState.battingTeam;
+  const bowlingTeam = gameState.bowlingTeam;
+  const battingQueue = getQueue(gameState, battingTeam);
+  const bowlingQueue = getQueue(gameState, bowlingTeam);
 
-  const bowlingTeam: TeamId = battingTeam === 'A' ? 'B' : 'A';
-  const battingQueue = gameState.turnQueue[battingTeam];
-  const bowlingQueue = gameState.turnQueue[bowlingTeam];
-
-  // Clone mutable state
-  let nextPlayers = Object.fromEntries(
-    Object.entries(players).map(([id, p]) => [id, { ...p }])
-  );
-  let nextGameState: GameState = {
+  const nextPlayers = clonePlayers(players);
+  const nextGameState: GameState = {
     ...gameState,
     status: room.status,
+    turnQueue: cloneQueue(gameState.turnQueue),
+    playersQueue: cloneQueue(gameState.playersQueue ?? gameState.turnQueue),
     teamScores: { ...gameState.teamScores },
     teamWickets: { ...gameState.teamWickets },
-    turnQueue: {
-      A: [...gameState.turnQueue.A],
-      B: [...gameState.turnQueue.B],
-    },
-    ballHistory: [...(gameState.ballHistory || [])],
+    ballHistory: [...(gameState.ballHistory ?? [])],
+    matchEvents: [...(gameState.matchEvents ?? [])],
   };
   let nextStatus = room.status;
 
-  // ── Record ball ──
+  const ballInOver = (nextGameState.ballCount ?? 0) + 1;
+  const overNumber = nextGameState.overNumber ?? 1;
+  const runs = isOut ? 0 : batterSelection;
+
   const ball: BallResult = {
-    batter: batterSel,
-    bowler: bowlerSel,
+    batter: batterSelection,
+    bowler: bowlerSelection,
     isOut,
     innings: nextGameState.currentInnings,
-    runs: isOut ? 0 : batterSel,
-    battingPlayerId,
-    bowlingPlayerId,
+    runs,
+    overNumber,
+    ballInOver,
+    battingPlayerId: currentBatterId,
+    bowlingPlayerId: currentBowlerId,
   };
+
   nextGameState.ballHistory.push(ball);
-
   nextGameState.lastResult = {
-    batter: batterSel,
-    bowler: bowlerSel,
+    batter: batterSelection,
+    bowler: bowlerSelection,
     isOut,
-    runs: isOut ? 0 : batterSel,
-    battingPlayerId,
-    bowlingPlayerId,
+    runs,
+    overNumber,
+    ballInOver,
+    battingPlayerId: currentBatterId,
+    bowlingPlayerId: currentBowlerId,
   };
 
-  // Clear all selections
-  for (const pid of Object.keys(nextPlayers)) {
-    nextPlayers[pid].selection = null;
+  for (const playerId of Object.keys(nextPlayers)) {
+    nextPlayers[playerId].selection = null;
   }
 
+  nextGameState.ballCount = ballInOver;
+
   if (isOut) {
-    // ── Wicket ──
-    nextPlayers[battingPlayerId].isOut = true;
+    nextPlayers[currentBatterId].isOut = true;
     nextGameState.teamWickets[battingTeam] -= 1;
 
-    const currentBatterIdx = battingQueue.indexOf(battingPlayerId);
-    const nextBatterIdx = nextAliveIdx(battingQueue, currentBatterIdx, nextPlayers);
+    pushEvent(nextGameState, {
+      type: 'wicket',
+      innings: nextGameState.currentInnings,
+      overNumber,
+      ballInOver,
+      title: 'WICKET!',
+      subtitle: `Player ${batter.name} is OUT`,
+      detail: `Taken by ${bowler.name}`,
+      batterId: currentBatterId,
+      bowlerId: currentBowlerId,
+      nextPlayerId: null,
+    });
 
-    if (nextBatterIdx === -1 || nextGameState.teamWickets[battingTeam] === 0) {
-      // ── All wickets fallen → innings over ──
+    const nextBatterId = nextAliveBatterId(battingQueue, currentBatterId, nextPlayers);
+    const inningsOver = !nextBatterId || nextGameState.teamWickets[battingTeam] <= 0;
+
+    if (!inningsOver && nextBatterId) {
+      nextGameState.currentBatterId = nextBatterId;
+      pushEvent(nextGameState, {
+        type: 'next_batter',
+        innings: nextGameState.currentInnings,
+        overNumber,
+        ballInOver,
+        title: 'New Batter',
+        subtitle: `${nextPlayers[nextBatterId].name} is now batting`,
+        batterId: currentBatterId,
+        bowlerId: currentBowlerId,
+        nextPlayerId: nextBatterId,
+      });
+    } else {
+      nextGameState.currentBatterId = null;
+    }
+
+    if (inningsOver) {
       if (nextGameState.currentInnings === 1) {
-        // Switch innings
-        const newBattingTeam: TeamId = battingTeam === 'A' ? 'B' : 'A';
-        const newBowlingTeam: TeamId = battingTeam;
-        const target = nextGameState.teamScores[battingTeam] + 1;
-        nextGameState.currentInnings = 2;
-        nextGameState.battingTeam = newBattingTeam;
-        nextGameState.bowlingTeam = newBowlingTeam;
-        nextGameState.target = target;
-
-        // Reset new batting team's isOut flags
-        for (const pid of nextGameState.turnQueue[newBattingTeam]) {
-          if (nextPlayers[pid]) nextPlayers[pid].isOut = false;
+        const nextBattingTeam = otherTeam(battingTeam);
+        for (const playerId of getQueue(nextGameState, nextBattingTeam)) {
+          if (nextPlayers[playerId]) nextPlayers[playerId].isOut = false;
         }
-
-        // Set first turn of innings 2
-        const newBattingQueue = nextGameState.turnQueue[newBattingTeam];
-        const newBowlingQueue = nextGameState.turnQueue[newBowlingTeam];
-        nextGameState.currentTurn = {
-          battingPlayerId: newBattingQueue[0],
-          bowlingPlayerId: newBowlingQueue[0],
-        };
+        startNextInnings(nextGameState, nextPlayers, nextBattingTeam);
       } else {
-        // ── Game Over ──
         nextStatus = GameStatus.FINISHED;
         nextGameState.status = GameStatus.FINISHED;
         nextGameState.over = true;
         nextGameState.winner = determineWinner(nextGameState);
         nextGameState.mvpPlayerId = findMVP(nextPlayers);
-        nextGameState.currentTurn = null;
+        nextGameState.currentBatterId = null;
+        nextGameState.currentBowlerId = null;
+        syncCurrentTurn(nextGameState);
       }
-    } else {
-      // ── Next batter, same bowler (advance bowling by 1 too) ──
-      const currentBowlerIdx = bowlingQueue.indexOf(bowlingPlayerId);
-      const nextBowlIdx = nextBowlerIdx(bowlingQueue, currentBowlerIdx);
-      nextGameState.currentTurn = {
-        battingPlayerId: battingQueue[nextBatterIdx],
-        bowlingPlayerId: bowlingQueue[nextBowlIdx],
-      };
     }
   } else {
-    // ── Runs scored ──
-    nextPlayers[battingPlayerId].score += batterSel;
-    nextGameState.teamScores[battingTeam] += batterSel;
+    nextPlayers[currentBatterId].score += batterSelection;
+    nextGameState.teamScores[battingTeam] += batterSelection;
 
-    // Check target reached in innings 2
     if (
       nextGameState.currentInnings === 2 &&
       nextGameState.target !== null &&
@@ -233,30 +316,59 @@ export const processTurn = (room: Room): Partial<Room> | null => {
       nextGameState.over = true;
       nextGameState.winner = battingTeam;
       nextGameState.mvpPlayerId = findMVP(nextPlayers);
-      nextGameState.currentTurn = null;
-    } else {
-      // Advance BOTH queues (this pair finished their mini-duel)
-      const currentBatterIdx = battingQueue.indexOf(battingPlayerId);
-      const currentBowlerIdx = bowlingQueue.indexOf(bowlingPlayerId);
-
-      // Batter advances to next alive batter
-      const nextBaterIdx2 = nextAliveIdx(battingQueue, currentBatterIdx, nextPlayers);
-      const nextBowlIdx2 = nextBowlerIdx(bowlingQueue, currentBowlerIdx);
-
-      if (nextBaterIdx2 === -1) {
-        // All batters exhausted but no wickets — wrap around to start
-        nextGameState.currentTurn = {
-          battingPlayerId: battingQueue.find(pid => nextPlayers[pid] && !nextPlayers[pid].isOut) || battingPlayerId,
-          bowlingPlayerId: bowlingQueue[nextBowlIdx2],
-        };
-      } else {
-        nextGameState.currentTurn = {
-          battingPlayerId: battingQueue[nextBaterIdx2],
-          bowlingPlayerId: bowlingQueue[nextBowlIdx2],
-        };
-      }
+      nextGameState.currentBatterId = null;
+      nextGameState.currentBowlerId = null;
+      syncCurrentTurn(nextGameState);
     }
   }
+
+  const overComplete =
+    nextStatus === GameStatus.PLAYING &&
+    nextGameState.currentBatterId !== null &&
+    nextGameState.ballCount >= 6;
+
+  if (overComplete) {
+    const nextBowlerId = selectNextBowlerId(
+      bowlingQueue,
+      currentBowlerId,
+      currentBowlerId,
+      nextPlayers
+    );
+
+    nextGameState.lastBowlerId = currentBowlerId;
+    nextGameState.ballCount = 0;
+    nextGameState.overNumber = overNumber + 1;
+    nextGameState.currentBowlerId = nextBowlerId;
+
+    if (nextBowlerId) {
+      pushEvent(nextGameState, {
+        type: 'over_complete',
+        innings: nextGameState.currentInnings,
+        overNumber,
+        ballInOver: 6,
+        title: 'Over Complete',
+        subtitle: `Over ${overNumber} completed`,
+        detail: `${nextPlayers[nextBowlerId].name} will bowl next`,
+        batterId: nextGameState.currentBatterId,
+        bowlerId: currentBowlerId,
+        nextPlayerId: nextBowlerId,
+      });
+    }
+  } else if (nextStatus === GameStatus.PLAYING && nextGameState.currentBowlerId === null) {
+    nextGameState.currentBowlerId = currentBowlerId;
+  }
+
+  if (nextStatus === GameStatus.PLAYING && nextGameState.currentBatterId === null) {
+    nextGameState.currentBatterId = currentBatterId;
+  }
+
+  if (nextStatus === GameStatus.PLAYING && !nextGameState.currentBowlerId) {
+    nextGameState.currentBowlerId =
+      selectNextBowlerId(bowlingQueue, currentBowlerId, nextGameState.lastBowlerId, nextPlayers) ??
+      currentBowlerId;
+  }
+
+  syncCurrentTurn(nextGameState);
 
   return {
     players: nextPlayers,
@@ -265,36 +377,33 @@ export const processTurn = (room: Room): Partial<Room> | null => {
   };
 };
 
-// ─── Determine Winner ─────────────────────────────────────────────────────────
+function determineWinner(gameState: GameState): TeamId | 'TIE' {
+  const { teamScores, battingTeam, target } = gameState;
+  const bowlingTeam = otherTeam(battingTeam);
 
-function determineWinner(gs: GameState): TeamId | 'TIE' {
-  const { teamScores, battingTeam, target } = gs;
-  const bowlingTeam: TeamId = battingTeam === 'A' ? 'B' : 'A';
-
-  if (gs.currentInnings === 2 && target !== null) {
+  if (gameState.currentInnings === 2 && target !== null) {
     const chaseScore = teamScores[battingTeam];
-    const defScore = target - 1; // score the defending team got
-    if (chaseScore > defScore) return battingTeam;
-    if (chaseScore === defScore) return 'TIE';
+    const defendingScore = target - 1;
+    if (chaseScore > defendingScore) return battingTeam;
+    if (chaseScore === defendingScore) return 'TIE';
     return bowlingTeam;
   }
 
-  // Fallback comparison
   if (teamScores.A > teamScores.B) return 'A';
   if (teamScores.B > teamScores.A) return 'B';
   return 'TIE';
 }
 
-// ─── MVP ──────────────────────────────────────────────────────────────────────
-
 function findMVP(players: Record<string, Player>): string | null {
   let topScore = -1;
-  let mvp: string | null = null;
-  for (const [pid, p] of Object.entries(players)) {
-    if (!p.isBot && p.score > topScore) {
-      topScore = p.score;
-      mvp = pid;
+  let mvpPlayerId: string | null = null;
+
+  for (const [playerId, player] of Object.entries(players)) {
+    if (!player.isBot && player.score > topScore) {
+      topScore = player.score;
+      mvpPlayerId = playerId;
     }
   }
-  return mvp;
+
+  return mvpPlayerId;
 }

@@ -20,6 +20,7 @@ import {
   TossDecision,
   TossState,
 } from '../types';
+import { processTurn } from '../gameLogic/engine';
 import { DEFAULT_TEAM_NAMES, sanitizeTeamName } from '../utils/teamNames';
 
 const ROOMS_COLLECTION = 'rooms';
@@ -121,10 +122,19 @@ function makeDefaultGameState(): GameState {
     toss: makeDefaultTossState(),
     currentTurn: null,
     turnQueue: { A: [], B: [] },
+    playersQueue: { A: [], B: [] },
+    currentBatterId: null,
+    currentBowlerId: null,
+    ballCount: 0,
+    overNumber: 1,
+    lastBowlerId: null,
     teamScores: { A: 0, B: 0 },
     teamWickets: { A: 0, B: 0 },
     lastResult: null,
     ballHistory: [],
+    latestEvent: null,
+    matchEvents: [],
+    eventSequence: 0,
     mvpPlayerId: null,
   };
 }
@@ -207,9 +217,30 @@ function normalizeRoomData(room: Room): Room {
         ...room.gameState?.toss,
       },
       turnQueue: {
-        A: room.gameState?.turnQueue?.A ?? [],
-        B: room.gameState?.turnQueue?.B ?? [],
+        A: room.gameState?.turnQueue?.A ?? room.gameState?.playersQueue?.A ?? [],
+        B: room.gameState?.turnQueue?.B ?? room.gameState?.playersQueue?.B ?? [],
       },
+      playersQueue: {
+        A: room.gameState?.playersQueue?.A ?? room.gameState?.turnQueue?.A ?? [],
+        B: room.gameState?.playersQueue?.B ?? room.gameState?.turnQueue?.B ?? [],
+      },
+      currentBatterId:
+        room.gameState?.currentBatterId ?? room.gameState?.currentTurn?.battingPlayerId ?? null,
+      currentBowlerId:
+        room.gameState?.currentBowlerId ?? room.gameState?.currentTurn?.bowlingPlayerId ?? null,
+      currentTurn:
+        (room.gameState?.currentBatterId ?? room.gameState?.currentTurn?.battingPlayerId) &&
+        (room.gameState?.currentBowlerId ?? room.gameState?.currentTurn?.bowlingPlayerId)
+          ? {
+              battingPlayerId:
+                room.gameState?.currentBatterId ?? room.gameState?.currentTurn?.battingPlayerId!,
+              bowlingPlayerId:
+                room.gameState?.currentBowlerId ?? room.gameState?.currentTurn?.bowlingPlayerId!,
+            }
+          : null,
+      ballCount: room.gameState?.ballCount ?? 0,
+      overNumber: room.gameState?.overNumber ?? 1,
+      lastBowlerId: room.gameState?.lastBowlerId ?? null,
       teamScores: {
         A: room.gameState?.teamScores?.A ?? 0,
         B: room.gameState?.teamScores?.B ?? 0,
@@ -220,6 +251,9 @@ function normalizeRoomData(room: Room): Room {
       },
       lastResult: room.gameState?.lastResult ?? null,
       ballHistory: room.gameState?.ballHistory ?? [],
+      latestEvent: room.gameState?.latestEvent ?? null,
+      matchEvents: room.gameState?.matchEvents ?? [],
+      eventSequence: room.gameState?.eventSequence ?? 0,
       mvpPlayerId: room.gameState?.mvpPlayerId ?? null,
     },
   };
@@ -260,6 +294,7 @@ function makePlayingGameState(room: Room, battingTeam: TeamId, decision: TossDec
     battingTeam,
     bowlingTeam,
     turnQueue: { A: queueA, B: queueB },
+    playersQueue: { A: queueA, B: queueB },
     teamWickets: {
       A: teamA.length,
       B: teamB.length,
@@ -268,6 +303,8 @@ function makePlayingGameState(room: Room, battingTeam: TeamId, decision: TossDec
       battingPlayerId: battingQueue[0],
       bowlingPlayerId: bowlingQueue[0],
     },
+    currentBatterId: battingQueue[0],
+    currentBowlerId: bowlingQueue[0],
     toss: {
       ...makeDefaultTossState(),
       selectedBy: room.gameState.toss.selectedBy,
@@ -825,8 +862,55 @@ export const submitSelection = async (
   selection: number
 ): Promise<void> => {
   const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+
+  if (!Number.isInteger(selection) || selection < 1 || selection > 6) {
+    throw new Error('Selection must be between 1 and 6');
+  }
+
   try {
-    await updateDoc(roomRef, { [`players.${playerId}.selection`]: selection });
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      if (room.status !== GameStatus.PLAYING || !room.gameState.currentTurn) {
+        return;
+      }
+
+      const currentTurn = room.gameState.currentTurn;
+      const isActivePlayer =
+        currentTurn.battingPlayerId === playerId || currentTurn.bowlingPlayerId === playerId;
+      if (!isActivePlayer) {
+        return;
+      }
+
+      const player = room.players[playerId];
+      if (!player || player.selection !== null) {
+        return;
+      }
+
+      const nextPlayers: Record<string, Player> = {
+        ...room.players,
+        [playerId]: {
+          ...player,
+          selection,
+        },
+      };
+
+      const roomWithSelection: Room = {
+        ...room,
+        players: nextPlayers,
+      };
+
+      const batter = nextPlayers[currentTurn.battingPlayerId];
+      const bowler = nextPlayers[currentTurn.bowlingPlayerId];
+      const updates =
+        batter?.selection !== null && bowler?.selection !== null
+          ? processTurn(roomWithSelection) ?? { players: nextPlayers }
+          : { players: nextPlayers };
+
+      transaction.update(roomRef, flattenRoomUpdate(updates));
+    });
   } catch (error) {
     handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
   }

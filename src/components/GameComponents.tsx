@@ -57,7 +57,7 @@ export function TeamScoreboard({ room, myTeam }: TeamScoreboardProps) {
     const tone = teamTone(team);
     const isBatting = battingTeam === team;
     const isMyTeam = myTeam === team;
-    const wickets = teamWickets[team];
+    const wicketsLost = Math.max(0, players.length - teamWickets[team]);
 
     return (
       <Card
@@ -84,7 +84,7 @@ export function TeamScoreboard({ room, myTeam }: TeamScoreboardProps) {
           <div className="text-right">
             <div className="flex items-center justify-end gap-1.5 text-xs font-semibold text-copy-secondary">
               <Shield className="h-3.5 w-3.5" />
-              {wickets}/{players.length}
+              {wicketsLost}/{players.length}
             </div>
             <div className="mt-0.5 text-[11px] text-copy-muted">wickets</div>
           </div>
@@ -119,23 +119,31 @@ interface InningsBadgeProps {
   target: number | null;
   battingTeam: TeamId;
   teamNames: TeamNames;
+  overNumber: number;
+  ballCount: number;
 }
 
-export function InningsBadge({ innings, target, battingTeam, teamNames }: InningsBadgeProps) {
+export function InningsBadge({
+  innings,
+  target,
+  battingTeam,
+  teamNames,
+  overNumber,
+  ballCount,
+}: InningsBadgeProps) {
   return (
     <motion.div
-      key={`${innings}-${target ?? 'open'}`}
+      key={`${innings}-${target ?? 'open'}-${overNumber}-${ballCount}`}
       initial={{ opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
     >
       <Card className="panel-section flex items-center justify-between gap-3 rounded-lg p-3 sm:px-4 sm:py-3.5">
-        <Badge tone="zinc" icon={CircleDot}>{innings === 1 ? 'First innings' : 'Second innings'}</Badge>
-        {target !== null ? (
-          <Badge tone="purple">Target {target}</Badge>
-        ) : (
-          <Badge tone="zinc">{getTeamName(teamNames, battingTeam)} bats</Badge>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone="zinc" icon={CircleDot}>{innings === 1 ? 'First innings' : 'Second innings'}</Badge>
+          <Badge tone="zinc">Over {overNumber} · {ballCount}/6</Badge>
+        </div>
+        {target !== null ? <Badge tone="purple">Target {target}</Badge> : <Badge tone="zinc">{getTeamName(teamNames, battingTeam)} bats</Badge>}
       </Card>
     </motion.div>
   );
@@ -184,7 +192,7 @@ export function MatchupBanner({ batter, bowler, myId }: MatchupBannerProps) {
 
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
           <div className="min-w-0 text-center">
-            <PlayerAvatar player={batter} active={isBatterMe} tone="A" />
+            <PlayerAvatar player={batter} active={isBatterMe} tone={batter.team} />
             <div className={cn('mt-2.5 truncate text-sm font-extrabold', isBatterMe ? 'text-brand-blue' : 'text-copy-primary')}>
               {isBatterMe ? 'You' : batter.name}
             </div>
@@ -198,7 +206,7 @@ export function MatchupBanner({ batter, bowler, myId }: MatchupBannerProps) {
           </div>
 
           <div className="min-w-0 text-center">
-            <PlayerAvatar player={bowler} active={isBowlerMe} tone="B" />
+            <PlayerAvatar player={bowler} active={isBowlerMe} tone={bowler.team} />
             <div className={cn('mt-2.5 truncate text-sm font-extrabold', isBowlerMe ? 'text-brand-purple' : 'text-copy-primary')}>
               {isBowlerMe ? 'You' : bowler.name}
             </div>

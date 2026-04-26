@@ -21,6 +21,7 @@ import {
   TeamScoreboard,
 } from '../components/GameComponents';
 import InningsAnnouncement, { type AnnouncementData } from '../components/InningsAnnouncement';
+import MatchEventPopup from '../components/MatchEventPopup';
 import MainLayout from '../components/layout/MainLayout';
 import { Badge, Button, Card, cn } from '../components/UI';
 import { auth } from '../firebase/config';
@@ -41,10 +42,9 @@ import {
   switchTeam,
   tossCoin,
   updateTeamName,
-  updateRoomState,
 } from '../firebase/roomService';
-import { aiPick, processTurn } from '../gameLogic/engine';
-import { GameStatus, Player, Room, TeamId, TossChoice, TossDecision } from '../types';
+import { aiPick } from '../gameLogic/engine';
+import { GameStatus, MatchEvent, Player, Room, TeamId, TossChoice, TossDecision } from '../types';
 import { getTeamName, sanitizeTeamName } from '../utils/teamNames';
 
 const INNINGS_ANNOUNCEMENT_STORAGE_PREFIX = 'handcrik_seen_innings_';
@@ -311,13 +311,16 @@ export default function Game() {
   const [revealedTossResult, setRevealedTossResult] = useState<TossChoice | null>(null);
   const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [announcementData, setAnnouncementData] = useState<AnnouncementData | null>(null);
-  const processingRef = useRef(false);
+  const [activeMatchEvent, setActiveMatchEvent] = useState<MatchEvent | null>(null);
+  const [pendingMatchEvents, setPendingMatchEvents] = useState<MatchEvent[]>([]);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAnimatedTossResultRef = useRef<TossChoice | null>(null);
   const lastAnnouncementKeyRef = useRef<string | null>(null);
+  const eventStreamInitializedRef = useRef(false);
+  const lastSeenMatchEventSequenceRef = useRef(0);
 
   useEffect(() => {
     if (!roomId) return;
@@ -364,7 +367,7 @@ export default function Game() {
     if (!room || !roomId || room.status !== GameStatus.PLAYING) return;
 
     const myCurrentId = playerId || auth.currentUser?.uid;
-    if (myCurrentId !== room.hostId || processingRef.current) return;
+    if (!myCurrentId || !room.players[myCurrentId]) return;
 
     const currentTurn = room.gameState.currentTurn;
     if (!currentTurn) return;
@@ -377,50 +380,44 @@ export default function Game() {
       (batter.isBot && batter.selection === null) ||
       (bowler.isBot && bowler.selection === null);
 
-    if (needsBotMove) {
+    if (!needsBotMove) {
       if (botTimerRef.current) clearTimeout(botTimerRef.current);
-
-      const delay = 200 + Math.random() * 300;
-      botTimerRef.current = setTimeout(() => {
-        const updates: Promise<void>[] = [];
-        if (batter.isBot && batter.selection === null) {
-          updates.push(
-            submitSelection(
-              roomId,
-              batter.id,
-              aiPick('batter', room.gameState.ballHistory || [], batter.id)
-            )
-          );
-        }
-        if (bowler.isBot && bowler.selection === null) {
-          updates.push(
-            submitSelection(
-              roomId,
-              bowler.id,
-              aiPick('bowler', room.gameState.ballHistory || [], bowler.id)
-            )
-          );
-        }
-        void Promise.all(updates);
-      }, delay);
-
-      return () => {
-        if (botTimerRef.current) clearTimeout(botTimerRef.current);
-      };
+      return;
     }
 
-    if (batter.selection !== null && bowler.selection !== null) {
-      processingRef.current = true;
-      const nextUpdates = processTurn(room);
-      if (nextUpdates) {
-        updateRoomState(roomId, nextUpdates).finally(() => {
-          processingRef.current = false;
-        });
-      } else {
-        processingRef.current = false;
+    if (botTimerRef.current) clearTimeout(botTimerRef.current);
+
+    const delay = 200 + Math.random() * 300;
+    botTimerRef.current = setTimeout(() => {
+      const updates: Promise<void>[] = [];
+
+      if (batter.isBot && batter.selection === null) {
+        updates.push(
+          submitSelection(
+            roomId,
+            batter.id,
+            aiPick('batter', room.gameState.ballHistory || [], batter.id)
+          )
+        );
       }
-    }
-  }, [room, roomId, playerId]);
+
+      if (bowler.isBot && bowler.selection === null) {
+        updates.push(
+          submitSelection(
+            roomId,
+            bowler.id,
+            aiPick('bowler', room.gameState.ballHistory || [], bowler.id)
+          )
+        );
+      }
+
+      void Promise.all(updates);
+    }, delay);
+
+    return () => {
+      if (botTimerRef.current) clearTimeout(botTimerRef.current);
+    };
+  }, [playerId, room, roomId]);
 
   useEffect(() => {
     if (!room || !isTossFlowStatus(room.status)) {
@@ -476,6 +473,13 @@ export default function Game() {
       if (tossRevealTimerRef.current) clearTimeout(tossRevealTimerRef.current);
     };
   }, [room?.status, room?.gameState.toss.completedAt, room?.gameState.toss.result]);
+
+  useEffect(() => {
+    eventStreamInitializedRef.current = false;
+    lastSeenMatchEventSequenceRef.current = 0;
+    setActiveMatchEvent(null);
+    setPendingMatchEvents([]);
+  }, [roomId]);
 
   const myId = playerId || auth.currentUser?.uid;
   const me = myId && room?.players[myId] ? (room.players[myId] as Player) : null;
@@ -550,10 +554,9 @@ export default function Game() {
       return;
     }
 
-    const winningCaptain = Object.values(room.players).find(
+    const winningCaptain = (Object.values(room.players) as Player[]).find(
       (player) => player.team === room.gameState.toss.winnerTeam && player.isCaptain
     );
-
     if (!winningCaptain?.isBot) {
       return;
     }
@@ -585,6 +588,10 @@ export default function Game() {
       lastAnnouncementKeyRef.current = null;
       setShowAnnouncement(false);
       setAnnouncementData(null);
+      eventStreamInitializedRef.current = false;
+      lastSeenMatchEventSequenceRef.current = 0;
+      setActiveMatchEvent(null);
+      setPendingMatchEvents([]);
       return;
     }
 
@@ -608,8 +615,49 @@ export default function Game() {
     markInningsPhaseSeen(roomId, phase);
   }, [me, room, roomId]);
 
+  useEffect(() => {
+    if (!room || room.status !== GameStatus.PLAYING) return;
+
+    const latestSequence = room.gameState.eventSequence ?? 0;
+    const matchEvents = room.gameState.matchEvents ?? [];
+
+    if (!eventStreamInitializedRef.current) {
+      eventStreamInitializedRef.current = true;
+      lastSeenMatchEventSequenceRef.current = latestSequence;
+      return;
+    }
+
+    if (latestSequence <= lastSeenMatchEventSequenceRef.current) {
+      return;
+    }
+
+    const unseenEvents = matchEvents.filter(
+      (event) => event.sequence > lastSeenMatchEventSequenceRef.current
+    );
+
+    if (unseenEvents.length === 0) {
+      lastSeenMatchEventSequenceRef.current = latestSequence;
+      return;
+    }
+
+    lastSeenMatchEventSequenceRef.current = unseenEvents[unseenEvents.length - 1].sequence;
+    setPendingMatchEvents((currentQueue) => [...currentQueue, ...unseenEvents]);
+  }, [room]);
+
+  useEffect(() => {
+    if (activeMatchEvent || pendingMatchEvents.length === 0) return;
+
+    const [nextEvent, ...remaining] = pendingMatchEvents;
+    setActiveMatchEvent(nextEvent);
+    setPendingMatchEvents(remaining);
+  }, [activeMatchEvent, pendingMatchEvents]);
+
   const dismissAnnouncement = () => {
     setShowAnnouncement(false);
+  };
+
+  const dismissMatchEvent = () => {
+    setActiveMatchEvent(null);
   };
 
   const announcementOverlay = (
@@ -617,6 +665,14 @@ export default function Game() {
       open={showAnnouncement}
       data={announcementData}
       onDismiss={dismissAnnouncement}
+    />
+  );
+
+  const matchEventOverlay = (
+    <MatchEventPopup
+      event={activeMatchEvent}
+      open={Boolean(activeMatchEvent)}
+      onDismiss={dismissMatchEvent}
     />
   );
 
@@ -630,6 +686,7 @@ export default function Game() {
           </Card>
         </Layout>
         {announcementOverlay}
+        {matchEventOverlay}
       </>
     );
   }
@@ -836,6 +893,7 @@ export default function Game() {
           </div>
         </MainLayout>
         {announcementOverlay}
+        {matchEventOverlay}
       </>
     );
   }
@@ -1020,6 +1078,7 @@ export default function Game() {
           ) : null}
         </AnimatePresence>
         {announcementOverlay}
+        {matchEventOverlay}
       </>
     );
   }
@@ -1053,6 +1112,8 @@ export default function Game() {
               target={room.gameState.target}
               battingTeam={room.gameState.battingTeam}
               teamNames={room.teamNames}
+              overNumber={room.gameState.overNumber}
+              ballCount={room.gameState.ballCount}
             />
             <MatchupBanner batter={currentBatterPlayer} bowler={currentBowlerPlayer} myId={myId} />
 
@@ -1158,6 +1219,7 @@ export default function Game() {
           </motion.div>
         </MainLayout>
         {announcementOverlay}
+        {matchEventOverlay}
       </>
     );
   }
@@ -1188,6 +1250,7 @@ export default function Game() {
           />
         </MainLayout>
         {announcementOverlay}
+        {matchEventOverlay}
       </>
     );
   }

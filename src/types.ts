@@ -31,6 +31,8 @@ export interface BallResult {
   isOut: boolean;
   innings: 1 | 2;
   runs: number;
+  overNumber: number;
+  ballInOver: number;
   battingPlayerId: string;
   bowlingPlayerId: string;
 }
@@ -43,6 +45,24 @@ export interface CurrentTurn {
 export interface TurnQueue {
   A: string[]; // ordered playerIds for team A
   B: string[]; // ordered playerIds for team B
+}
+
+export type MatchEventType = 'wicket' | 'next_batter' | 'over_complete';
+
+export interface MatchEvent {
+  id: string;
+  type: MatchEventType;
+  sequence: number;
+  innings: 1 | 2;
+  overNumber: number;
+  ballInOver: number;
+  title: string;
+  subtitle: string;
+  detail?: string;
+  batterId?: string | null;
+  bowlerId?: string | null;
+  nextPlayerId?: string | null;
+  createdAt: number;
 }
 
 export interface TeamData {
@@ -61,6 +81,12 @@ export interface GameState {
   toss: TossState;
   currentTurn: CurrentTurn | null;
   turnQueue: TurnQueue;
+  playersQueue: TurnQueue;
+  currentBatterId: string | null;
+  currentBowlerId: string | null;
+  ballCount: number;
+  overNumber: number;
+  lastBowlerId: string | null;
   teamScores: Record<TeamId, number>;
   teamWickets: Record<TeamId, number>;  // remaining wickets
   lastResult: {
@@ -68,10 +94,15 @@ export interface GameState {
     bowler: number;
     isOut: boolean;
     runs: number;
+    overNumber: number;
+    ballInOver: number;
     battingPlayerId: string;
     bowlingPlayerId: string;
   } | null;
   ballHistory: BallResult[];
+  latestEvent: MatchEvent | null;
+  matchEvents: MatchEvent[];
+  eventSequence: number;
   mvpPlayerId: string | null;
 }
 
