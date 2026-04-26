@@ -35,8 +35,8 @@ import {
   joinRoom,
   makeCaptain,
   removeAiPlayer,
-  resetRoom,
   resolveAiTossDecision,
+  returnPlayerToLobby,
   startMatch,
   submitSelection,
   subscribeToRoom,
@@ -61,6 +61,7 @@ const INNINGS_ANNOUNCEMENT_STORAGE_PREFIX = 'handcrik_seen_innings_';
 const TOSS_REVEAL_DURATION_MS = 1150;
 const TOSS_RESULT_POPUP_DURATION_MS = 2500;
 const AI_TOSS_DECISION_DELAY_MS = 900;
+type GameView = 'game' | 'summary' | 'lobby';
 
 function isTossFlowStatus(status: GameStatus | null | undefined): boolean {
   return (
@@ -110,6 +111,21 @@ function createAnnouncementData(room: Room, me: Player): AnnouncementData {
 function formatCaptainName(player: Player | null): string {
   if (!player) return 'Waiting';
   return player.isBot ? 'AI Bot' : player.name;
+}
+
+function getViewForRoom(room: Room | null, playerId: string | null | undefined): GameView {
+  if (!room) return 'game';
+
+  if (room.status === GameStatus.LOBBY) {
+    return 'lobby';
+  }
+
+  if (room.status === GameStatus.FINISHED) {
+    const playerStatus = playerId ? room.players[playerId]?.status : null;
+    return playerStatus === 'in_lobby' ? 'lobby' : 'summary';
+  }
+
+  return 'game';
 }
 
 function statusMessageForToss(
@@ -165,6 +181,7 @@ function teamClasses(team: TeamId) {
 interface TeamLobbyCardProps {
   actionLoading: boolean;
   hostId: string;
+  interactionDisabled?: boolean;
   members: Player[];
   me: Player | null;
   myId: string | null | undefined;
@@ -300,6 +317,7 @@ function JoinNameGate({
 function TeamLobbyCard({
   actionLoading,
   hostId,
+  interactionDisabled = false,
   members,
   me,
   myId,
@@ -312,7 +330,7 @@ function TeamLobbyCard({
   const styles = teamClasses(team);
   const humanCount = members.filter((player) => !player.isBot).length;
   const [draftName, setDraftName] = useState(teamName);
-  const canEditTeamName = Boolean(me?.isCaptain && me.team === team);
+  const canEditTeamName = !interactionDisabled && Boolean(me?.isCaptain && me.team === team);
   const normalizedDraftName = sanitizeTeamName(draftName, team);
   const canSaveTeamName = normalizedDraftName !== teamName;
 
@@ -347,13 +365,14 @@ function TeamLobbyCard({
             onChange={(event) => setDraftName(event.target.value)}
             maxLength={24}
             placeholder={`Rename ${teamName}`}
+            disabled={interactionDisabled || actionLoading}
             className="min-h-11 min-w-0 flex-1 rounded-lg border border-surface-border bg-surface-950 px-3 text-sm font-semibold text-copy-primary outline-none transition placeholder:text-copy-muted focus:border-brand-blue/45 focus:ring-4 focus:ring-brand-blue/10"
           />
           <Button
             type="submit"
             variant="outline"
             size="sm"
-            disabled={actionLoading || !canSaveTeamName}
+            disabled={interactionDisabled || actionLoading || !canSaveTeamName}
           >
             Save
           </Button>
@@ -395,7 +414,11 @@ function TeamLobbyCard({
               </div>
 
               <div className="flex shrink-0 items-center gap-1">
-                {me?.isCaptain && me.team === player.team && player.id !== myId && !player.isBot ? (
+                {!interactionDisabled &&
+                me?.isCaptain &&
+                me.team === player.team &&
+                player.id !== myId &&
+                !player.isBot ? (
                   <Button
                     onClick={() => onMakeCaptain(player.id)}
                     disabled={actionLoading}
@@ -405,7 +428,7 @@ function TeamLobbyCard({
                     Captain
                   </Button>
                 ) : null}
-                {player.isBot ? (
+                {!interactionDisabled && player.isBot ? (
                   <Button
                     onClick={() => onRemoveBot(player.id)}
                     disabled={actionLoading}
@@ -434,6 +457,7 @@ function TeamLobbyCard({
 export default function Game() {
   const { roomId } = useParams<{ roomId: string }>();
   const [room, setRoom] = useState<Room | null>(null);
+  const [view, setView] = useState<GameView>('game');
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -442,6 +466,7 @@ export default function Game() {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [showJoinNameGate, setShowJoinNameGate] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [returningToLobby, setReturningToLobby] = useState(false);
   const [isCoinFlipping, setIsCoinFlipping] = useState(false);
   const [revealedTossResult, setRevealedTossResult] = useState<TossChoice | null>(null);
   const [showAnnouncement, setShowAnnouncement] = useState(false);
@@ -666,11 +691,35 @@ export default function Game() {
     setShowJoinNameGate(false);
     setJoinIdentityMode('edit');
     setJoinName('');
+    setView('game');
+    setReturningToLobby(false);
     eventStreamInitializedRef.current = false;
     lastSeenMatchEventSequenceRef.current = 0;
     setActiveMatchEvent(null);
     setPendingMatchEvents([]);
   }, [roomId]);
+
+  useEffect(() => {
+    const currentPlayerId = playerId || auth.currentUser?.uid || null;
+    const nextView = getViewForRoom(room, currentPlayerId);
+
+    setView((currentView) => {
+      if (
+        returningToLobby &&
+        currentView === 'lobby' &&
+        room?.status === GameStatus.FINISHED &&
+        nextView === 'summary'
+      ) {
+        return currentView;
+      }
+
+      return currentView === nextView ? currentView : nextView;
+    });
+
+    if (!room || room.status !== GameStatus.FINISHED || nextView === 'lobby') {
+      setReturningToLobby(false);
+    }
+  }, [playerId, returningToLobby, room]);
 
   const myId = playerId || auth.currentUser?.uid;
   const me = myId && room?.players[myId] ? (room.players[myId] as Player) : null;
@@ -971,7 +1020,37 @@ export default function Game() {
     }
   };
 
-  if (room.status === GameStatus.LOBBY) {
+  const handleReturnToLobby = async () => {
+    if (!roomId || !myId) return;
+
+    setReturningToLobby(true);
+    setView('lobby');
+
+    try {
+      await returnPlayerToLobby(roomId, myId);
+    } catch (error: any) {
+      setReturningToLobby(false);
+      setView('summary');
+      alert(error.message || 'Unable to return to the lobby');
+    }
+  };
+
+  const summaryViewerCount = allPlayers.filter(
+    (player) =>
+      !player.isBot &&
+      !(room.status === GameStatus.FINISHED && view === 'lobby' && player.id === myId) &&
+      player.status !== 'in_lobby'
+  ).length;
+  const otherSummaryPlayersCount = Math.max(
+    0,
+    summaryViewerCount - (view === 'summary' && me && me.status !== 'in_lobby' ? 1 : 0)
+  );
+  const showLobbyView =
+    room.status === GameStatus.LOBBY ||
+    (room.status === GameStatus.FINISHED && view === 'lobby');
+  const isPostMatchLobby = room.status === GameStatus.FINISHED && view === 'lobby';
+
+  if (showLobbyView) {
     return (
       <>
         <MainLayout
@@ -981,14 +1060,39 @@ export default function Game() {
           room={room}
           roomId={roomId!}
           senderName={chatSenderName}
-          title="Match lobby"
-          subtitle={`${humanCount} player${humanCount !== 1 ? 's' : ''} joined`}
+          title={isPostMatchLobby ? 'Post-match lobby' : 'Match lobby'}
+          subtitle={
+            isPostMatchLobby
+              ? summaryViewerCount > 0
+                ? `${summaryViewerCount} player${summaryViewerCount !== 1 ? 's' : ''} still viewing summary`
+                : 'Resetting room for the next match'
+              : `${humanCount} player${humanCount !== 1 ? 's' : ''} joined`
+          }
         >
           <div className="space-y-6">
+            {isPostMatchLobby ? (
+              <Card className="panel-section rounded-lg p-4 sm:p-5">
+                <div className="flex items-start gap-3">
+                  <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-brand-yellow" />
+                  <div>
+                    <div className="text-sm font-black text-copy-primary">
+                      You returned to the lobby.
+                    </div>
+                    <p className="mt-1 text-sm font-semibold text-copy-secondary">
+                      {summaryViewerCount > 0
+                        ? `Waiting for ${summaryViewerCount} more player${summaryViewerCount !== 1 ? 's' : ''} to leave the summary before the room resets.`
+                        : 'Everyone has left the summary. The room should reset in a moment.'}
+                    </p>
+                  </div>
+                </div>
+              </Card>
+            ) : null}
+
             <div className="grid gap-4 lg:grid-cols-2">
               <TeamLobbyCard
                 actionLoading={actionLoading}
                 hostId={room.hostId}
+                interactionDisabled={isPostMatchLobby}
                 members={teamAPlayers}
                 me={me}
                 myId={myId}
@@ -1001,6 +1105,7 @@ export default function Game() {
               <TeamLobbyCard
                 actionLoading={actionLoading}
                 hostId={room.hostId}
+                interactionDisabled={isPostMatchLobby}
                 members={teamBPlayers}
                 me={me}
                 myId={myId}
@@ -1012,7 +1117,7 @@ export default function Game() {
               />
             </div>
 
-            {me ? (
+            {me && !isPostMatchLobby ? (
               <Button
                 onClick={() => withLoad(() => switchTeam(roomId!, myId!))}
                 disabled={actionLoading}
@@ -1024,7 +1129,7 @@ export default function Game() {
               </Button>
             ) : null}
 
-            {isHost ? (
+            {isPostMatchLobby ? null : isHost ? (
               <div className="space-y-3">
                 <AnimatePresence initial={false}>
                   {isSinglePlayer ? (
@@ -1457,8 +1562,9 @@ export default function Game() {
           title="Match result"
         >
           <MatchSummary
-            onReturnToLobby={() => withLoad(() => resetRoom(roomId!))}
-            returning={actionLoading}
+            onReturnToLobby={() => void handleReturnToLobby()}
+            otherSummaryPlayersCount={otherSummaryPlayersCount}
+            returning={returningToLobby}
             room={room}
           />
         </MainLayout>

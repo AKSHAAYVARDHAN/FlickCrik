@@ -8,6 +8,7 @@ import { Badge, Button, cn } from './UI';
 
 interface MatchSummaryProps {
   onReturnToLobby: () => void;
+  otherSummaryPlayersCount: number;
   returning: boolean;
   room: Room;
 }
@@ -106,6 +107,7 @@ function StatCell({
 
 export default function MatchSummary({
   onReturnToLobby,
+  otherSummaryPlayersCount,
   returning,
   room,
 }: MatchSummaryProps) {
@@ -410,7 +412,9 @@ export default function MatchSummary({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm font-semibold text-copy-secondary">
               {canReturnToLobby
-                ? 'Any player can return everyone to the lobby.'
+                ? otherSummaryPlayersCount > 0
+                  ? `Returning only affects your screen. ${otherSummaryPlayersCount} player${otherSummaryPlayersCount !== 1 ? 's are' : ' is'} still viewing summary.`
+                  : 'Returning only affects your screen. You are the last player on the summary.'
                 : `Return to lobby unlocks in ${Math.ceil(remainingMs / 1000)}s so everyone can see the summary.`}
             </div>
             <Button

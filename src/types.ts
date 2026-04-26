@@ -12,11 +12,13 @@ export type TeamId = 'A' | 'B';
 export type TeamNames = Record<TeamId, string>;
 export type TossChoice = 'heads' | 'tails';
 export type TossDecision = 'bat' | 'bowl';
+export type PlayerStatus = 'active' | 'in_lobby';
 
 export interface Player {
   id: string;
   name: string;
   team: TeamId;
+  status: PlayerStatus;
   isCaptain: boolean;
   isBot: boolean;
   score: number;       // individual runs scored (batting)

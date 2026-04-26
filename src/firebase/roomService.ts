@@ -13,6 +13,7 @@ import {
   GameState,
   GameStatus,
   Player,
+  PlayerStatus,
   Room,
   TeamId,
   TeamNames,
@@ -104,6 +105,10 @@ function sortPlayersByOrder(players: Player[]): Player[] {
   return [...players].sort((a, b) => a.order - b.order);
 }
 
+function normalizePlayerStatus(status: PlayerStatus | undefined): PlayerStatus {
+  return status === 'in_lobby' ? 'in_lobby' : 'active';
+}
+
 function makeDefaultTossState(selectedBy: TeamId | null = null): TossState {
   return {
     selectedBy,
@@ -162,6 +167,7 @@ function normalizeCaptains(players: Record<string, Player>): Record<string, Play
       {
         ...player,
         isCaptain: Boolean(player.isCaptain),
+        status: normalizePlayerStatus(player.status),
       },
     ])
   ) as Record<string, Player>;
@@ -197,12 +203,34 @@ function resetPlayersForPreMatch(players: Record<string, Player>): Record<string
       id,
       {
         ...player,
+        status: 'active',
         score: 0,
         isOut: false,
         selection: null,
       },
     ])
   ) as Record<string, Player>;
+}
+
+function resetPlayersForLobby(players: Record<string, Player>): Record<string, Player> {
+  const resetPlayers: Record<string, Player> = {};
+  let orderA = 0;
+  let orderB = 0;
+
+  for (const [playerId, player] of Object.entries(players)) {
+    if (player.isBot) continue;
+
+    resetPlayers[playerId] = {
+      ...player,
+      status: 'active',
+      score: 0,
+      isOut: false,
+      selection: null,
+      order: player.team === 'A' ? orderA++ : orderB++,
+    };
+  }
+
+  return normalizeCaptains(resetPlayers);
 }
 
 function normalizeRoomData(room: Room): Room {
@@ -407,6 +435,7 @@ export const createRoom = async (
     id: playerId,
     name: playerName,
     team: 'A',
+    status: 'active',
     isCaptain: true,
     isBot: false,
     score: 0,
@@ -458,6 +487,7 @@ export const joinRoom = async (
     id: playerId,
     name: playerName,
     team,
+    status: 'active',
     isCaptain: (team === 'A' ? teamACount : teamBCount) === 0,
     isBot: false,
     score: 0,
@@ -576,6 +606,7 @@ export const addAiPlayer = async (roomId: string, team: TeamId): Promise<void> =
     id: aiId,
     name: 'AI Bot',
     team,
+    status: 'active',
     isCaptain: orderInTeam === 0,
     isBot: true,
     score: 0,
@@ -1020,26 +1051,70 @@ export const resetRoom = async (roomId: string): Promise<void> => {
         throw new Error('Summary is still syncing. Please wait a moment.');
       }
 
-      const resetPlayers: Record<string, Player> = {};
-      let orderA = 0;
-      let orderB = 0;
+      transaction.update(roomRef, {
+        status: GameStatus.LOBBY,
+        players: resetPlayersForLobby(room.players),
+        gameState: makeDefaultGameState(),
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
 
-      for (const [playerId, player] of Object.entries(room.players)) {
-        if (player.isBot) continue;
+export const returnPlayerToLobby = async (roomId: string, playerId: string): Promise<void> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
 
-        resetPlayers[playerId] = {
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      if (room.status === GameStatus.LOBBY) {
+        return;
+      }
+      if (room.status !== GameStatus.FINISHED) {
+        throw new Error('Can only leave the summary after the match ends');
+      }
+
+      const player = room.players[playerId];
+      if (!player) {
+        throw new Error('Player not found');
+      }
+
+      const finishedAt = room.gameState.finishedAt ?? 0;
+      if (finishedAt && Date.now() - finishedAt < SUMMARY_VISIBILITY_DELAY_MS) {
+        throw new Error('Summary is still syncing. Please wait a moment.');
+      }
+
+      if (player.status === 'in_lobby') {
+        return;
+      }
+
+      const nextPlayers = normalizeCaptains({
+        ...room.players,
+        [playerId]: {
           ...player,
-          score: 0,
-          isOut: false,
-          selection: null,
-          order: player.team === 'A' ? orderA++ : orderB++,
-        };
+          status: 'in_lobby',
+        },
+      });
+      const humanPlayers = Object.values(nextPlayers).filter((member) => !member.isBot);
+      const everyoneReturned =
+        humanPlayers.length > 0 &&
+        humanPlayers.every((member) => member.status === 'in_lobby');
+
+      if (everyoneReturned) {
+        transaction.update(roomRef, {
+          status: GameStatus.LOBBY,
+          players: resetPlayersForLobby(nextPlayers),
+          gameState: makeDefaultGameState(),
+        });
+        return;
       }
 
       transaction.update(roomRef, {
-        status: GameStatus.LOBBY,
-        players: normalizeCaptains(resetPlayers),
-        gameState: makeDefaultGameState(),
+        [`players.${playerId}.status`]: 'in_lobby',
       });
     });
   } catch (error) {
