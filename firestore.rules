@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    match /rooms/{roomId} {
+      // Anyone can read rooms (needed for room sharing by code)
+      allow read: if true;
+
+      // Anyone can create a room (anonymous gameplay, no auth required)
+      allow create: if true;
+
+      // BUG FIX: unified rule covers join, move, and game-end writes.
+      // The engine sends { players, gameState, status } together,
+      // which the old per-field rules would reject.
+      allow update: if (
+        incoming().diff(existing()).affectedKeys()
+          .hasOnly(['players', 'status', 'gameState', 'chat'])
+        && chatUnchangedOrValid()
+      );
+    }
+  }
+
+  function incoming() {
+    return request.resource.data;
+  }
+
+  function existing() {
+    return resource.data;
+  }
+
+  function chatUnchangedOrValid() {
+    return !incoming().diff(existing()).affectedKeys().hasAny(['chat'])
+      || (incoming().chat is list && incoming().chat.size() <= 50);
+  }
+}

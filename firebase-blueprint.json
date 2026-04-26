@@ -1,0 +1,35 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "A multiplayer game room for HandCrik",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["waiting", "playing", "finished"],
+          "description": "The current status of the game room"
+        },
+        "players": {
+          "type": "object",
+          "description": "Map of player IDs to player data"
+        },
+        "gameState": {
+          "type": "object",
+          "description": "The current state of the cricket match"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["status", "players", "gameState", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Collection of active and finished game rooms"
+    }
+  }
+}
