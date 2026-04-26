@@ -1,0 +1,37 @@
+export const PLAYER_NAME_STORAGE_KEY = 'playerName';
+export const LEGACY_PLAYER_NAME_STORAGE_KEY = 'handcrik_name';
+export const PLAYER_ID_STORAGE_PREFIX = 'handcrik_player_';
+export const PENDING_JOIN_NAME_PREFIX = 'handcrik_pending_join_';
+export const PLAYER_NAME_MAX_LENGTH = 24;
+
+export function sanitizePlayerName(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, PLAYER_NAME_MAX_LENGTH);
+}
+
+export function isValidPlayerName(value: string | null | undefined): value is string {
+  return sanitizePlayerName(value ?? '').length > 0;
+}
+
+export function getStoredPlayerName(): string {
+  const rawValue =
+    localStorage.getItem(PLAYER_NAME_STORAGE_KEY) ??
+    localStorage.getItem(LEGACY_PLAYER_NAME_STORAGE_KEY) ??
+    '';
+
+  return sanitizePlayerName(rawValue);
+}
+
+export function persistPlayerName(name: string): string {
+  const nextName = sanitizePlayerName(name);
+  localStorage.setItem(PLAYER_NAME_STORAGE_KEY, nextName);
+  localStorage.setItem(LEGACY_PLAYER_NAME_STORAGE_KEY, nextName);
+  return nextName;
+}
+
+export function getRoomPlayerStorageKey(roomId: string): string {
+  return `${PLAYER_ID_STORAGE_PREFIX}${roomId}`;
+}
+
+export function getPendingJoinStorageKey(roomId: string): string {
+  return `${PENDING_JOIN_NAME_PREFIX}${roomId}`;
+}

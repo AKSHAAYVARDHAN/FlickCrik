@@ -4,6 +4,13 @@ import { Hash, Play, User } from 'lucide-react';
 import Layout from '../components/Layout';
 import { Badge, Button, Card, GameLogo, InputField } from '../components/UI';
 import { createRoom } from '../firebase/roomService';
+import {
+  getRoomPlayerStorageKey,
+  getPendingJoinStorageKey,
+  persistPlayerName,
+  PLAYER_NAME_MAX_LENGTH,
+  sanitizePlayerName,
+} from '../utils/playerIdentity';
 
 export default function Home() {
   const [name, setName] = useState('');
@@ -11,7 +18,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  const cleanName = name.trim();
+  const cleanName = sanitizePlayerName(name);
   const cleanRoomId = roomId.trim().toUpperCase();
 
   const handleCreate = async () => {
@@ -19,8 +26,8 @@ export default function Home() {
     setLoading(true);
     try {
       const { roomId: id, playerId } = await createRoom(cleanName);
-      localStorage.setItem('handcrik_name', cleanName);
-      localStorage.setItem(`handcrik_player_${id}`, playerId);
+      persistPlayerName(cleanName);
+      localStorage.setItem(getRoomPlayerStorageKey(id), playerId);
       navigate(`/room/${id}`);
     } catch (error) {
       console.error(error);
@@ -31,7 +38,8 @@ export default function Home() {
 
   const handleJoin = () => {
     if (!cleanName || !cleanRoomId) return;
-    localStorage.setItem('handcrik_name', cleanName);
+    persistPlayerName(cleanName);
+    sessionStorage.setItem(getPendingJoinStorageKey(cleanRoomId), cleanName);
     navigate(`/room/${cleanRoomId}`);
   };
 
@@ -54,7 +62,7 @@ export default function Home() {
             icon={User}
             placeholder="Enter your name"
             value={name}
-            maxLength={24}
+            maxLength={PLAYER_NAME_MAX_LENGTH}
             onChange={(event) => setName(event.target.value)}
           />
 

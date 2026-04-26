@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowLeftRight,
@@ -10,6 +10,7 @@ import {
   Play,
   Plus,
   Shuffle,
+  User,
   X,
 } from 'lucide-react';
 import Layout from '../components/Layout';
@@ -23,7 +24,7 @@ import {
 import InningsAnnouncement, { type AnnouncementData } from '../components/InningsAnnouncement';
 import MatchEventPopup from '../components/MatchEventPopup';
 import MainLayout from '../components/layout/MainLayout';
-import { Badge, Button, Card, cn } from '../components/UI';
+import { Badge, Button, Card, cn, InputField } from '../components/UI';
 import { auth } from '../firebase/config';
 import {
   addAiPlayer,
@@ -45,6 +46,15 @@ import {
 } from '../firebase/roomService';
 import { aiPick } from '../gameLogic/engine';
 import { GameStatus, MatchEvent, Player, Room, TeamId, TossChoice, TossDecision } from '../types';
+import {
+  getPendingJoinStorageKey,
+  getRoomPlayerStorageKey,
+  getStoredPlayerName,
+  isValidPlayerName,
+  persistPlayerName,
+  PLAYER_NAME_MAX_LENGTH,
+  sanitizePlayerName,
+} from '../utils/playerIdentity';
 import { getTeamName, sanitizeTeamName } from '../utils/teamNames';
 
 const INNINGS_ANNOUNCEMENT_STORAGE_PREFIX = 'handcrik_seen_innings_';
@@ -163,6 +173,128 @@ interface TeamLobbyCardProps {
   onRenameTeam: (teamName: string) => void;
   team: TeamId;
   teamName: string;
+}
+
+type JoinIdentityMode = 'confirm' | 'edit';
+
+interface JoinNameGateProps {
+  error: string | null;
+  loading: boolean;
+  mode: JoinIdentityMode;
+  name: string;
+  onConfirmStoredName: () => void;
+  onNameChange: (value: string) => void;
+  onSubmit: () => void;
+  onSwitchToEdit: () => void;
+  roomId: string;
+  storedName: string | null;
+}
+
+function JoinNameGate({
+  error,
+  loading,
+  mode,
+  name,
+  onConfirmStoredName,
+  onNameChange,
+  onSubmit,
+  onSwitchToEdit,
+  roomId,
+  storedName,
+}: JoinNameGateProps) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[95] flex items-center justify-center bg-[#050816]/78 px-4 backdrop-blur-md"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.98, y: -10 }}
+        transition={{ duration: 0.24, ease: 'easeOut' }}
+        className="w-full max-w-md"
+      >
+        <Card className="panel-shell rounded-2xl p-6 sm:p-7">
+          <Badge tone="yellow" className="mb-4">Join room {roomId}</Badge>
+
+          {mode === 'confirm' && storedName ? (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-2xl font-black text-copy-primary">Continue as {storedName}?</h2>
+                <p className="mt-2 text-sm font-semibold text-copy-secondary">
+                  You opened an invite link. Choose this identity or enter a different name before joining.
+                </p>
+              </div>
+
+              {error ? (
+                <div className="rounded-lg border border-brand-red/30 bg-brand-red/10 px-4 py-3 text-sm font-semibold text-[#ffc0ca]">
+                  {error}
+                </div>
+              ) : null}
+
+              <div className="grid gap-3">
+                <Button
+                  onClick={onConfirmStoredName}
+                  loading={loading}
+                  size="lg"
+                  className="w-full"
+                >
+                  Continue as {storedName}
+                </Button>
+                <Button
+                  onClick={onSwitchToEdit}
+                  disabled={loading}
+                  variant="outline"
+                  size="lg"
+                  className="w-full"
+                >
+                  Change name
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <form
+              className="space-y-5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onSubmit();
+              }}
+            >
+              <div>
+                <h2 className="text-2xl font-black text-copy-primary">Enter your name</h2>
+                <p className="mt-2 text-sm font-semibold text-copy-secondary">
+                  Confirm your player identity before joining this room.
+                </p>
+              </div>
+
+              <InputField
+                label="Player name"
+                icon={User}
+                placeholder="Enter your name"
+                value={name}
+                maxLength={PLAYER_NAME_MAX_LENGTH}
+                autoFocus
+                onChange={(event) => onNameChange(event.target.value)}
+                helper={`Up to ${PLAYER_NAME_MAX_LENGTH} characters`}
+              />
+
+              {error ? (
+                <div className="rounded-lg border border-brand-red/30 bg-brand-red/10 px-4 py-3 text-sm font-semibold text-[#ffc0ca]">
+                  {error}
+                </div>
+              ) : null}
+
+              <Button type="submit" loading={loading} size="lg" className="w-full">
+                Join Game
+              </Button>
+            </form>
+          )}
+        </Card>
+      </motion.div>
+    </motion.div>
+  );
 }
 
 function TeamLobbyCard({
@@ -301,11 +433,14 @@ function TeamLobbyCard({
 
 export default function Game() {
   const { roomId } = useParams<{ roomId: string }>();
-  const navigate = useNavigate();
   const [room, setRoom] = useState<Room | null>(null);
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [joining, setJoining] = useState(false);
+  const [joinIdentityMode, setJoinIdentityMode] = useState<JoinIdentityMode>('edit');
+  const [joinName, setJoinName] = useState('');
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [showJoinNameGate, setShowJoinNameGate] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [isCoinFlipping, setIsCoinFlipping] = useState(false);
   const [revealedTossResult, setRevealedTossResult] = useState<TossChoice | null>(null);
@@ -321,22 +456,63 @@ export default function Game() {
   const lastAnnouncementKeyRef = useRef<string | null>(null);
   const eventStreamInitializedRef = useRef(false);
   const lastSeenMatchEventSequenceRef = useRef(0);
+  const joinInFlightRef = useRef(false);
+  const joinGateInitializedRef = useRef(false);
+
+  const openJoinNameGate = (preferredMode: JoinIdentityMode = 'edit') => {
+    const storedName = getStoredPlayerName();
+    const nextMode =
+      preferredMode === 'confirm' && isValidPlayerName(storedName) ? 'confirm' : 'edit';
+
+    setJoinIdentityMode(nextMode);
+    setJoinName(storedName);
+    setJoinError(null);
+    setShowJoinNameGate(true);
+    joinGateInitializedRef.current = true;
+  };
+
+  const completeRoomJoin = async (rawName: string) => {
+    if (!roomId || joinInFlightRef.current) return;
+
+    const nextName = sanitizePlayerName(rawName);
+    if (!nextName) {
+      setJoinIdentityMode('edit');
+      setJoinError('Please enter your name to join.');
+      setShowJoinNameGate(true);
+      return;
+    }
+
+    joinInFlightRef.current = true;
+    setJoining(true);
+    setJoinError(null);
+
+    try {
+      const nextPlayerId = await joinRoom(roomId, nextName);
+      persistPlayerName(nextName);
+      localStorage.setItem(getRoomPlayerStorageKey(roomId), nextPlayerId);
+      sessionStorage.removeItem(getPendingJoinStorageKey(roomId));
+      setPlayerId(nextPlayerId);
+      setJoinName(nextName);
+      setShowJoinNameGate(false);
+    } catch (error: any) {
+      setJoinIdentityMode('edit');
+      setJoinError(error?.message || 'Unable to join room');
+      setShowJoinNameGate(true);
+    } finally {
+      joinInFlightRef.current = false;
+      setJoining(false);
+    }
+  };
 
   useEffect(() => {
     if (!roomId) return;
-
-    const storedName = localStorage.getItem('handcrik_name');
-    if (!storedName) {
-      navigate('/');
-      return;
-    }
 
     const unsubscribe = subscribeToRoom(roomId, (updatedRoom) => {
       setRoom(updatedRoom);
 
       let currentId = auth.currentUser?.uid || playerId;
       if (!currentId) {
-        const storedPlayerId = localStorage.getItem(`handcrik_player_${roomId}`);
+        const storedPlayerId = localStorage.getItem(getRoomPlayerStorageKey(roomId));
         if (storedPlayerId) {
           currentId = storedPlayerId;
           setPlayerId(storedPlayerId);
@@ -344,24 +520,33 @@ export default function Game() {
       }
 
       const isAlreadyInRoom = currentId ? Boolean(updatedRoom.players[currentId]) : false;
-      if (!isAlreadyInRoom && updatedRoom.status === GameStatus.LOBBY && !joining) {
-        setJoining(true);
-        joinRoom(roomId, storedName)
-          .then((nextPlayerId) => {
-            setPlayerId(nextPlayerId);
-            localStorage.setItem(`handcrik_player_${roomId}`, nextPlayerId);
-          })
-          .catch((error) => {
-            console.error(error);
-          })
-          .finally(() => {
-            setJoining(false);
-          });
+      if (isAlreadyInRoom) {
+        setShowJoinNameGate(false);
+        setJoinError(null);
+        joinGateInitializedRef.current = false;
+        return;
+      }
+
+      if (updatedRoom.status !== GameStatus.LOBBY) {
+        return;
+      }
+
+      const pendingJoinName = sanitizePlayerName(
+        sessionStorage.getItem(getPendingJoinStorageKey(roomId)) ?? ''
+      );
+
+      if (pendingJoinName && !joinInFlightRef.current) {
+        void completeRoomJoin(pendingJoinName);
+        return;
+      }
+
+      if (!joinGateInitializedRef.current) {
+        openJoinNameGate(isValidPlayerName(getStoredPlayerName()) ? 'confirm' : 'edit');
       }
     });
 
     return () => unsubscribe();
-  }, [navigate, playerId, roomId, joining]);
+  }, [playerId, roomId]);
 
   useEffect(() => {
     if (!room || !roomId || room.status !== GameStatus.PLAYING) return;
@@ -475,6 +660,12 @@ export default function Game() {
   }, [room?.status, room?.gameState.toss.completedAt, room?.gameState.toss.result]);
 
   useEffect(() => {
+    joinGateInitializedRef.current = false;
+    joinInFlightRef.current = false;
+    setJoinError(null);
+    setShowJoinNameGate(false);
+    setJoinIdentityMode('edit');
+    setJoinName('');
     eventStreamInitializedRef.current = false;
     lastSeenMatchEventSequenceRef.current = 0;
     setActiveMatchEvent(null);
@@ -486,7 +677,7 @@ export default function Game() {
   const isHost = myId === room?.hostId;
   const currentTurn = room?.gameState.currentTurn ?? null;
   const toss = room?.gameState.toss ?? null;
-  const chatSenderName = me?.name || localStorage.getItem('handcrik_name') || 'Player';
+  const chatSenderName = me?.name || getStoredPlayerName() || 'Player';
 
   const isMyTurn = Boolean(
     currentTurn &&
@@ -676,6 +867,31 @@ export default function Game() {
     />
   );
 
+  const joinNameGateOverlay =
+    showJoinNameGate && roomId ? (
+      <JoinNameGate
+        error={joinError}
+        loading={joining}
+        mode={joinIdentityMode}
+        name={joinName}
+        onConfirmStoredName={() => void completeRoomJoin(joinName)}
+        onNameChange={(value) => {
+          setJoinName(value);
+          if (joinError) setJoinError(null);
+        }}
+        onSubmit={() => void completeRoomJoin(joinName)}
+        onSwitchToEdit={() => {
+          setJoinIdentityMode('edit');
+          setJoinError(null);
+          if (!joinName) {
+            setJoinName(getStoredPlayerName());
+          }
+        }}
+        roomId={roomId}
+        storedName={isValidPlayerName(joinName) ? sanitizePlayerName(joinName) : null}
+      />
+    ) : null;
+
   if (!room) {
     return (
       <>
@@ -687,6 +903,7 @@ export default function Game() {
         </Layout>
         {announcementOverlay}
         {matchEventOverlay}
+        {joinNameGateOverlay}
       </>
     );
   }
@@ -894,6 +1111,7 @@ export default function Game() {
         </MainLayout>
         {announcementOverlay}
         {matchEventOverlay}
+        {joinNameGateOverlay}
       </>
     );
   }
@@ -1079,6 +1297,7 @@ export default function Game() {
         </AnimatePresence>
         {announcementOverlay}
         {matchEventOverlay}
+        {joinNameGateOverlay}
       </>
     );
   }
@@ -1220,6 +1439,7 @@ export default function Game() {
         </MainLayout>
         {announcementOverlay}
         {matchEventOverlay}
+        {joinNameGateOverlay}
       </>
     );
   }
@@ -1251,6 +1471,7 @@ export default function Game() {
         </MainLayout>
         {announcementOverlay}
         {matchEventOverlay}
+        {joinNameGateOverlay}
       </>
     );
   }
