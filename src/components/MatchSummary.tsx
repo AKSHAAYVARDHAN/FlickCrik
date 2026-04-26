@@ -407,14 +407,7 @@ export default function MatchSummary({
         </div>
 
         <div className="border-t border-[#1F2937] bg-[#121315]/96 px-5 py-4 sm:px-7">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm font-semibold text-copy-secondary">
-              {canReturnToLobby
-                ? otherSummaryPlayersCount > 0
-                  ? `${otherSummaryPlayersCount} player${otherSummaryPlayersCount !== 1 ? 's are' : ' is'} still viewing summary.`
-                  : 'You are the last player viewing the summary.'
-                : `Return to lobby unlocks in ${Math.ceil(remainingMs / 1000)}s so everyone can see the summary.`}
-            </div>
+          <div className="flex justify-end">
             <Button
               onClick={onReturnToLobby}
               disabled={!canReturnToLobby}
