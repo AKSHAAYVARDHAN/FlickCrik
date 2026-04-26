@@ -35,3 +35,14 @@ export function getRoomPlayerStorageKey(roomId: string): string {
 export function getPendingJoinStorageKey(roomId: string): string {
   return `${PENDING_JOIN_NAME_PREFIX}${roomId}`;
 }
+
+export function getStoredRoomPlayerId(roomId: string): string | null {
+  const storageKey = getRoomPlayerStorageKey(roomId);
+  return sessionStorage.getItem(storageKey) ?? localStorage.getItem(storageKey);
+}
+
+export function persistRoomPlayerId(roomId: string, playerId: string): void {
+  const storageKey = getRoomPlayerStorageKey(roomId);
+  sessionStorage.setItem(storageKey, playerId);
+  localStorage.removeItem(storageKey);
+}

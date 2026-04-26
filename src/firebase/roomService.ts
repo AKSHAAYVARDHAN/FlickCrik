@@ -1092,27 +1092,6 @@ export const returnPlayerToLobby = async (roomId: string, playerId: string): Pro
         return;
       }
 
-      const nextPlayers = normalizeCaptains({
-        ...room.players,
-        [playerId]: {
-          ...player,
-          status: 'in_lobby',
-        },
-      });
-      const humanPlayers = Object.values(nextPlayers).filter((member) => !member.isBot);
-      const everyoneReturned =
-        humanPlayers.length > 0 &&
-        humanPlayers.every((member) => member.status === 'in_lobby');
-
-      if (everyoneReturned) {
-        transaction.update(roomRef, {
-          status: GameStatus.LOBBY,
-          players: resetPlayersForLobby(nextPlayers),
-          gameState: makeDefaultGameState(),
-        });
-        return;
-      }
-
       transaction.update(roomRef, {
         [`players.${playerId}.status`]: 'in_lobby',
       });

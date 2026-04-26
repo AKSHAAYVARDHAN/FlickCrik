@@ -5,8 +5,8 @@ import Layout from '../components/Layout';
 import { Badge, Button, Card, GameLogo, InputField } from '../components/UI';
 import { createRoom } from '../firebase/roomService';
 import {
-  getRoomPlayerStorageKey,
   getPendingJoinStorageKey,
+  persistRoomPlayerId,
   persistPlayerName,
   PLAYER_NAME_MAX_LENGTH,
   sanitizePlayerName,
@@ -27,7 +27,7 @@ export default function Home() {
     try {
       const { roomId: id, playerId } = await createRoom(cleanName);
       persistPlayerName(cleanName);
-      localStorage.setItem(getRoomPlayerStorageKey(id), playerId);
+      persistRoomPlayerId(id, playerId);
       navigate(`/room/${id}`);
     } catch (error) {
       console.error(error);

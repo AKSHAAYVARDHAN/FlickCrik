@@ -10,6 +10,7 @@ import {
   Play,
   Plus,
   Shuffle,
+  Trophy,
   User,
   X,
 } from 'lucide-react';
@@ -48,9 +49,10 @@ import { aiPick } from '../gameLogic/engine';
 import { GameStatus, MatchEvent, Player, Room, TeamId, TossChoice, TossDecision } from '../types';
 import {
   getPendingJoinStorageKey,
-  getRoomPlayerStorageKey,
+  getStoredRoomPlayerId,
   getStoredPlayerName,
   isValidPlayerName,
+  persistRoomPlayerId,
   persistPlayerName,
   PLAYER_NAME_MAX_LENGTH,
   sanitizePlayerName,
@@ -60,6 +62,7 @@ import { getTeamName, sanitizeTeamName } from '../utils/teamNames';
 const INNINGS_ANNOUNCEMENT_STORAGE_PREFIX = 'handcrik_seen_innings_';
 const TOSS_REVEAL_DURATION_MS = 1150;
 const TOSS_RESULT_POPUP_DURATION_MS = 2500;
+const MATCH_RESULT_POPUP_DURATION_MS = 2500;
 const AI_TOSS_DECISION_DELAY_MS = 900;
 type GameView = 'game' | 'summary' | 'lobby';
 
@@ -128,6 +131,15 @@ function getViewForRoom(room: Room | null, playerId: string | null | undefined):
   return 'game';
 }
 
+function resolvePlayerId(roomId: string | undefined, playerId: string | null): string | null {
+  if (playerId) return playerId;
+  if (roomId) {
+    const storedPlayerId = getStoredRoomPlayerId(roomId);
+    if (storedPlayerId) return storedPlayerId;
+  }
+  return auth.currentUser?.uid ?? null;
+}
+
 function statusMessageForToss(
   room: Room,
   tossSelectingTeam: TeamId,
@@ -176,6 +188,20 @@ function teamClasses(team: TeamId) {
         border: 'border-brand-purple/35',
         badge: 'purple' as const,
       };
+}
+
+function matchResultPopupMessage(room: Room): string {
+  const winner = room.gameState.winner;
+
+  if (winner === 'TIE') {
+    return 'Match tied';
+  }
+
+  if (winner) {
+    return `Match won by ${getTeamName(room, winner)}`;
+  }
+
+  return 'Match complete';
 }
 
 interface TeamLobbyCardProps {
@@ -473,10 +499,12 @@ export default function Game() {
   const [announcementData, setAnnouncementData] = useState<AnnouncementData | null>(null);
   const [activeMatchEvent, setActiveMatchEvent] = useState<MatchEvent | null>(null);
   const [pendingMatchEvents, setPendingMatchEvents] = useState<MatchEvent[]>([]);
+  const [showMatchResultPopup, setShowMatchResultPopup] = useState(false);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const matchResultPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAnimatedTossResultRef = useRef<TossChoice | null>(null);
   const lastAnnouncementKeyRef = useRef<string | null>(null);
   const eventStreamInitializedRef = useRef(false);
@@ -514,7 +542,7 @@ export default function Game() {
     try {
       const nextPlayerId = await joinRoom(roomId, nextName);
       persistPlayerName(nextName);
-      localStorage.setItem(getRoomPlayerStorageKey(roomId), nextPlayerId);
+      persistRoomPlayerId(roomId, nextPlayerId);
       sessionStorage.removeItem(getPendingJoinStorageKey(roomId));
       setPlayerId(nextPlayerId);
       setJoinName(nextName);
@@ -535,13 +563,10 @@ export default function Game() {
     const unsubscribe = subscribeToRoom(roomId, (updatedRoom) => {
       setRoom(updatedRoom);
 
-      let currentId = auth.currentUser?.uid || playerId;
-      if (!currentId) {
-        const storedPlayerId = localStorage.getItem(getRoomPlayerStorageKey(roomId));
-        if (storedPlayerId) {
-          currentId = storedPlayerId;
-          setPlayerId(storedPlayerId);
-        }
+      const currentId = resolvePlayerId(roomId, playerId);
+
+      if (!playerId && currentId) {
+        setPlayerId(currentId);
       }
 
       const isAlreadyInRoom = currentId ? Boolean(updatedRoom.players[currentId]) : false;
@@ -576,7 +601,7 @@ export default function Game() {
   useEffect(() => {
     if (!room || !roomId || room.status !== GameStatus.PLAYING) return;
 
-    const myCurrentId = playerId || auth.currentUser?.uid;
+    const myCurrentId = resolvePlayerId(roomId, playerId);
     if (!myCurrentId || !room.players[myCurrentId]) return;
 
     const currentTurn = room.gameState.currentTurn;
@@ -697,10 +722,17 @@ export default function Game() {
     lastSeenMatchEventSequenceRef.current = 0;
     setActiveMatchEvent(null);
     setPendingMatchEvents([]);
+    setShowMatchResultPopup(false);
+    if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
   }, [roomId]);
 
   useEffect(() => {
-    const currentPlayerId = playerId || auth.currentUser?.uid || null;
+    if (!roomId || !playerId) return;
+    persistRoomPlayerId(roomId, playerId);
+  }, [playerId, roomId]);
+
+  useEffect(() => {
+    const currentPlayerId = resolvePlayerId(roomId, playerId);
     const nextView = getViewForRoom(room, currentPlayerId);
 
     setView((currentView) => {
@@ -719,9 +751,9 @@ export default function Game() {
     if (!room || room.status !== GameStatus.FINISHED || nextView === 'lobby') {
       setReturningToLobby(false);
     }
-  }, [playerId, returningToLobby, room]);
+  }, [playerId, returningToLobby, room, roomId]);
 
-  const myId = playerId || auth.currentUser?.uid;
+  const myId = resolvePlayerId(roomId, playerId);
   const me = myId && room?.players[myId] ? (room.players[myId] as Player) : null;
   const isHost = myId === room?.hostId;
   const currentTurn = room?.gameState.currentTurn ?? null;
@@ -892,6 +924,50 @@ export default function Game() {
     setPendingMatchEvents(remaining);
   }, [activeMatchEvent, pendingMatchEvents]);
 
+  useEffect(() => {
+    if (room?.status !== GameStatus.FINISHED) return;
+
+    if (activeMatchEvent) {
+      setActiveMatchEvent(null);
+    }
+
+    if (pendingMatchEvents.length > 0) {
+      setPendingMatchEvents([]);
+    }
+  }, [activeMatchEvent, pendingMatchEvents, room?.status]);
+
+  useEffect(() => {
+    if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
+
+    if (!room || room.status !== GameStatus.FINISHED) {
+      setShowMatchResultPopup(false);
+      return;
+    }
+
+    const finishedAt = room.gameState.finishedAt;
+    if (!finishedAt) {
+      setShowMatchResultPopup(false);
+      return;
+    }
+
+    const elapsedSinceFinish = Math.max(0, Date.now() - finishedAt);
+
+    if (elapsedSinceFinish >= MATCH_RESULT_POPUP_DURATION_MS) {
+      setShowMatchResultPopup(false);
+      return;
+    }
+
+    setShowMatchResultPopup(true);
+
+    matchResultPopupTimerRef.current = setTimeout(() => {
+      setShowMatchResultPopup(false);
+    }, MATCH_RESULT_POPUP_DURATION_MS - elapsedSinceFinish);
+
+    return () => {
+      if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
+    };
+  }, [room?.gameState.finishedAt, room?.status]);
+
   const dismissAnnouncement = () => {
     setShowAnnouncement(false);
   };
@@ -984,6 +1060,7 @@ export default function Game() {
         : 'Opponent Team won the toss'
       : `${getTeamName(room, toss.winnerTeam)} won the toss`
     : 'Toss complete';
+  const matchWinnerPopupMessage = room ? matchResultPopupMessage(room) : 'Match complete';
 
   const copyLink = () => {
     navigator.clipboard.writeText(window.location.href);
@@ -1065,7 +1142,7 @@ export default function Game() {
             isPostMatchLobby
               ? summaryViewerCount > 0
                 ? `${summaryViewerCount} player${summaryViewerCount !== 1 ? 's' : ''} still viewing summary`
-                : 'Resetting room for the next match'
+                : 'You are back in the lobby'
               : `${humanCount} player${humanCount !== 1 ? 's' : ''} joined`
           }
         >
@@ -1080,8 +1157,8 @@ export default function Game() {
                     </div>
                     <p className="mt-1 text-sm font-semibold text-copy-secondary">
                       {summaryViewerCount > 0
-                        ? `Waiting for ${summaryViewerCount} more player${summaryViewerCount !== 1 ? 's' : ''} to leave the summary before the room resets.`
-                        : 'Everyone has left the summary. The room should reset in a moment.'}
+                        ? `${summaryViewerCount} more player${summaryViewerCount !== 1 ? 's are' : ' is'} still viewing the summary.`
+                        : 'Everyone else has already left the summary.'}
                     </p>
                   </div>
                 </div>
@@ -1552,24 +1629,49 @@ export default function Game() {
   if (room.status === GameStatus.FINISHED) {
     return (
       <>
-        <MainLayout
-          copied={copied}
-          myId={myId}
-          onCopy={copyLink}
-          room={room}
-          roomId={roomId!}
-          senderName={chatSenderName}
-          title="Match result"
-        >
-          <MatchSummary
-            onReturnToLobby={() => void handleReturnToLobby()}
-            otherSummaryPlayersCount={otherSummaryPlayersCount}
-            returning={returningToLobby}
+        {showMatchResultPopup ? (
+          <AnimatePresence>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[90] flex items-center justify-center bg-[#050816]/72 px-4 backdrop-blur-[3px]"
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9, y: 14 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.98, y: -10 }}
+                transition={{ duration: 0.28, ease: 'easeOut' }}
+                className="panel-shell w-full max-w-md rounded-2xl border border-brand-yellow/30 px-6 py-7 text-center shadow-[0_28px_80px_rgba(0,0,0,0.35)]"
+              >
+                <Badge tone="yellow" className="mx-auto" icon={Trophy}>Match result</Badge>
+                <div className="mt-4 text-2xl font-black text-copy-primary sm:text-3xl">
+                  {matchWinnerPopupMessage}
+                </div>
+                <div className="mt-2 text-sm font-semibold text-copy-secondary">
+                  Match Summary coming up next
+                </div>
+              </motion.div>
+            </motion.div>
+          </AnimatePresence>
+        ) : (
+          <MainLayout
+            copied={copied}
+            myId={myId}
+            onCopy={copyLink}
             room={room}
-          />
-        </MainLayout>
-        {announcementOverlay}
-        {matchEventOverlay}
+            roomId={roomId!}
+            senderName={chatSenderName}
+            title="Match result"
+          >
+            <MatchSummary
+              onReturnToLobby={() => void handleReturnToLobby()}
+              otherSummaryPlayersCount={otherSummaryPlayersCount}
+              returning={returningToLobby}
+              room={room}
+            />
+          </MainLayout>
+        )}
         {joinNameGateOverlay}
       </>
     );

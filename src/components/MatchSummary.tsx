@@ -413,8 +413,8 @@ export default function MatchSummary({
             <div className="text-sm font-semibold text-copy-secondary">
               {canReturnToLobby
                 ? otherSummaryPlayersCount > 0
-                  ? `Returning only affects your screen. ${otherSummaryPlayersCount} player${otherSummaryPlayersCount !== 1 ? 's are' : ' is'} still viewing summary.`
-                  : 'Returning only affects your screen. You are the last player on the summary.'
+                  ? `${otherSummaryPlayersCount} player${otherSummaryPlayersCount !== 1 ? 's are' : ' is'} still viewing summary.`
+                  : 'You are the last player viewing the summary.'
                 : `Return to lobby unlocks in ${Math.ceil(remainingMs / 1000)}s so everyone can see the summary.`}
             </div>
             <Button
@@ -425,7 +425,7 @@ export default function MatchSummary({
               size="lg"
               className="w-full sm:w-auto"
             >
-              Return to Lobby
+              Return to the lobby
             </Button>
           </div>
         </div>
