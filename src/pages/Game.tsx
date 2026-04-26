@@ -493,6 +493,7 @@ export default function Game() {
   const [showJoinNameGate, setShowJoinNameGate] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [returningToLobby, setReturningToLobby] = useState(false);
+  const [showReplayReadyBanner, setShowReplayReadyBanner] = useState(false);
   const [isCoinFlipping, setIsCoinFlipping] = useState(false);
   const [revealedTossResult, setRevealedTossResult] = useState<TossChoice | null>(null);
   const [showAnnouncement, setShowAnnouncement] = useState(false);
@@ -511,6 +512,7 @@ export default function Game() {
   const lastSeenMatchEventSequenceRef = useRef(0);
   const joinInFlightRef = useRef(false);
   const joinGateInitializedRef = useRef(false);
+  const previousRoomStatusRef = useRef<GameStatus | null>(null);
 
   const openJoinNameGate = (preferredMode: JoinIdentityMode = 'edit') => {
     const storedName = getStoredPlayerName();
@@ -718,6 +720,8 @@ export default function Game() {
     setJoinName('');
     setView('game');
     setReturningToLobby(false);
+    setShowReplayReadyBanner(false);
+    previousRoomStatusRef.current = null;
     eventStreamInitializedRef.current = false;
     lastSeenMatchEventSequenceRef.current = 0;
     setActiveMatchEvent(null);
@@ -752,6 +756,19 @@ export default function Game() {
       setReturningToLobby(false);
     }
   }, [playerId, returningToLobby, room, roomId]);
+
+  useEffect(() => {
+    const previousStatus = previousRoomStatusRef.current;
+    const currentStatus = room?.status ?? null;
+
+    if (previousStatus === GameStatus.FINISHED && currentStatus === GameStatus.LOBBY) {
+      setShowReplayReadyBanner(true);
+    } else if (currentStatus !== GameStatus.LOBBY) {
+      setShowReplayReadyBanner(false);
+    }
+
+    previousRoomStatusRef.current = currentStatus;
+  }, [room?.status]);
 
   const myId = resolvePlayerId(roomId, playerId);
   const me = myId && room?.players[myId] ? (room.players[myId] as Player) : null;
@@ -1098,12 +1115,13 @@ export default function Game() {
   };
 
   const handleReturnToLobby = async () => {
-    if (!roomId || !myId) return;
+    if (!roomId || !myId || room?.status !== GameStatus.FINISHED) return;
 
     setReturningToLobby(true);
 
     try {
       await returnPlayerToLobby(roomId, myId);
+      setView('lobby');
     } catch (error: any) {
       setReturningToLobby(false);
       alert(error.message || 'Unable to return to the lobby');
@@ -1120,7 +1138,18 @@ export default function Game() {
     0,
     summaryViewerCount - (view === 'summary' && me && me.status !== 'in_lobby' ? 1 : 0)
   );
-  const showLobbyView = room.status === GameStatus.LOBBY;
+  const isFinishedLocalLobby = room.status === GameStatus.FINISHED && view === 'lobby';
+  const showLobbyView = view === 'lobby';
+  const lobbyRoom = isFinishedLocalLobby
+    ? {
+        ...room,
+        status: GameStatus.LOBBY,
+        gameState: {
+          ...room.gameState,
+          status: GameStatus.LOBBY,
+        },
+      }
+    : room;
 
   if (showLobbyView) {
     return (
@@ -1129,16 +1158,37 @@ export default function Game() {
           copied={copied}
           myId={myId}
           onCopy={copyLink}
-          room={room}
+          room={lobbyRoom}
           roomId={roomId!}
           senderName={chatSenderName}
           title="Match Lobby"
         >
           <div className="space-y-6">
+            {showReplayReadyBanner ? (
+              <Card className="panel-section rounded-lg p-4 sm:p-5">
+                <Badge tone="green">Ready</Badge>
+                <p className="mt-3 text-sm font-semibold text-copy-secondary">
+                  {isHost
+                    ? 'All players are ready. Start the next match.'
+                    : 'All players are ready. Waiting for the host to start the next match.'}
+                </p>
+              </Card>
+            ) : null}
+
+            {isFinishedLocalLobby ? (
+              <Card className="panel-section rounded-lg p-4 sm:p-5">
+                <Badge tone="zinc">Lobby Mode</Badge>
+                <p className="mt-3 text-sm font-semibold text-copy-secondary">
+                  You've returned to the lobby. Other players may still be viewing the match summary.
+                </p>
+              </Card>
+            ) : null}
+
             <div className="grid gap-4 lg:grid-cols-2">
               <TeamLobbyCard
                 actionLoading={actionLoading}
                 hostId={room.hostId}
+                interactionDisabled={isFinishedLocalLobby}
                 members={teamAPlayers}
                 me={me}
                 myId={myId}
@@ -1151,6 +1201,7 @@ export default function Game() {
               <TeamLobbyCard
                 actionLoading={actionLoading}
                 hostId={room.hostId}
+                interactionDisabled={isFinishedLocalLobby}
                 members={teamBPlayers}
                 me={me}
                 myId={myId}
@@ -1165,16 +1216,22 @@ export default function Game() {
             {me ? (
               <Button
                 onClick={() => withLoad(() => switchTeam(roomId!, myId!))}
-                disabled={actionLoading}
+                disabled={actionLoading || isFinishedLocalLobby}
                 variant={me.team === 'A' ? 'secondary' : 'outline'}
                 icon={ArrowLeftRight}
                 className="w-full"
               >
-                Switch to {getTeamName(room, me.team === 'A' ? 'B' : 'A')}
+                Switch to {getTeamName(lobbyRoom, me.team === 'A' ? 'B' : 'A')}
               </Button>
             ) : null}
 
-            {isHost ? (
+            {isFinishedLocalLobby ? (
+              <Card className="panel-section rounded-lg p-5 text-center">
+                <p className="text-sm font-bold text-copy-secondary">
+                  Waiting for other players to return before starting a new match.
+                </p>
+              </Card>
+            ) : isHost ? (
               <div className="space-y-3">
                 <AnimatePresence initial={false}>
                   {isSinglePlayer ? (
@@ -1635,7 +1692,6 @@ export default function Game() {
             <MatchSummary
               onReturnToLobby={() => void handleReturnToLobby()}
               otherSummaryPlayersCount={otherSummaryPlayersCount}
-              returning={returningToLobby}
               room={room}
             />
           </MainLayout>

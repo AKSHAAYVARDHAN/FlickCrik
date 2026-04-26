@@ -233,6 +233,11 @@ function resetPlayersForLobby(players: Record<string, Player>): Record<string, P
   return normalizeCaptains(resetPlayers);
 }
 
+function areAllHumanPlayersInLobby(players: Record<string, Player>): boolean {
+  const humanPlayers = Object.values(players).filter((player) => !player.isBot);
+  return humanPlayers.length > 0 && humanPlayers.every((player) => player.status === 'in_lobby');
+}
+
 function normalizeRoomData(room: Room): Room {
   const status = room.status ?? room.gameState?.status ?? GameStatus.LOBBY;
   const baseState = makeDefaultGameState();
@@ -1088,10 +1093,25 @@ export const returnPlayerToLobby = async (roomId: string, playerId: string): Pro
         throw new Error('Summary is still syncing. Please wait a moment.');
       }
 
+      const nextPlayers = normalizeCaptains({
+        ...room.players,
+        [playerId]: {
+          ...player,
+          status: 'in_lobby',
+        },
+      });
+
+      if (areAllHumanPlayersInLobby(nextPlayers)) {
+        transaction.update(roomRef, {
+          status: GameStatus.LOBBY,
+          players: resetPlayersForLobby(nextPlayers),
+          gameState: makeDefaultGameState(),
+        });
+        return;
+      }
+
       transaction.update(roomRef, {
-        status: GameStatus.LOBBY,
-        players: resetPlayersForLobby(room.players),
-        gameState: makeDefaultGameState(),
+        [`players.${playerId}.status`]: 'in_lobby',
       });
     });
   } catch (error) {

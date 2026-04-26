@@ -9,7 +9,6 @@ import { Badge, Button, cn } from './UI';
 interface MatchSummaryProps {
   onReturnToLobby: () => void;
   otherSummaryPlayersCount: number;
-  returning: boolean;
   room: Room;
 }
 
@@ -108,7 +107,6 @@ function StatCell({
 export default function MatchSummary({
   onReturnToLobby,
   otherSummaryPlayersCount,
-  returning,
   room,
 }: MatchSummaryProps) {
   const [now, setNow] = useState(() => Date.now());
@@ -419,8 +417,7 @@ export default function MatchSummary({
             </div>
             <Button
               onClick={onReturnToLobby}
-              loading={returning}
-              disabled={!canReturnToLobby || returning}
+              disabled={!canReturnToLobby}
               icon={RotateCcw}
               size="lg"
               className="w-full sm:w-auto"
