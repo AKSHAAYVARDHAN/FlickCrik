@@ -70,6 +70,40 @@ function formatSummaryLine(runs: number, wicketsLost: number, oversPlayed: strin
   return `${runs}/${wicketsLost} (${oversPlayed} overs)`;
 }
 
+function StatCell({
+  label,
+  value,
+  align = 'left',
+  emphasis = false,
+}: {
+  label: string;
+  value: string | number;
+  align?: 'left' | 'center' | 'right';
+  emphasis?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        'min-w-0',
+        align === 'center' && 'text-center',
+        align === 'right' && 'text-right'
+      )}
+    >
+      <div
+        className={cn(
+          'truncate tabular-nums text-copy-primary',
+          emphasis ? 'text-4xl font-black sm:text-[2.6rem]' : 'text-2xl font-black sm:text-3xl'
+        )}
+      >
+        {value}
+      </div>
+      <div className="mt-1 text-xs font-semibold uppercase tracking-[0.08em] text-copy-secondary">
+        {label}
+      </div>
+    </div>
+  );
+}
+
 export default function MatchSummary({
   onReturnToLobby,
   returning,
@@ -319,60 +353,44 @@ export default function MatchSummary({
                                 <Badge tone={styles.badge}>{player.team}</Badge>
                               </div>
 
-                              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                                <div className="rounded-2xl border border-[#1F2937] bg-black/10 p-3.5">
+                              <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                                <div className="rounded-2xl border border-[#1F2937] bg-black/10 p-4 sm:p-5">
                                   <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-copy-muted">
                                     Batting
                                   </div>
-                                  <div className="mt-3 flex items-end justify-between gap-3">
-                                    <div>
-                                      <div className="text-3xl font-black text-copy-primary tabular-nums">
-                                        {stats?.runsScored ?? 0}
-                                      </div>
-                                      <div className="text-xs font-semibold text-copy-secondary">
-                                        runs
-                                      </div>
-                                    </div>
-                                    <div className="text-right">
-                                      <div className="text-lg font-black text-copy-primary tabular-nums">
-                                        {stats?.ballsFaced ?? 0}
-                                      </div>
-                                      <div className="text-xs font-semibold text-copy-secondary">
-                                        balls
-                                      </div>
-                                    </div>
+                                  <div className="mt-4 grid grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)] items-end gap-4 sm:gap-6">
+                                    <StatCell
+                                      label="runs"
+                                      value={stats?.runsScored ?? 0}
+                                      emphasis
+                                    />
+                                    <StatCell
+                                      label="balls"
+                                      value={stats?.ballsFaced ?? 0}
+                                      align="right"
+                                    />
                                   </div>
                                 </div>
 
-                                <div className="rounded-2xl border border-[#1F2937] bg-black/10 p-3.5">
+                                <div className="rounded-2xl border border-[#1F2937] bg-black/10 p-4 sm:p-5">
                                   <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-copy-muted">
                                     Bowling
                                   </div>
-                                  <div className="mt-3 grid grid-cols-3 gap-2">
-                                    <div>
-                                      <div className="text-2xl font-black text-copy-primary tabular-nums">
-                                        {stats?.wicketsTaken ?? 0}
-                                      </div>
-                                      <div className="text-[11px] font-semibold text-copy-secondary">
-                                        wkts
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <div className="text-2xl font-black text-copy-primary tabular-nums">
-                                        {stats?.runsConceded ?? 0}
-                                      </div>
-                                      <div className="text-[11px] font-semibold text-copy-secondary">
-                                        runs
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <div className="text-2xl font-black text-copy-primary tabular-nums">
-                                        {stats?.oversBowled ?? '0.0'}
-                                      </div>
-                                      <div className="text-[11px] font-semibold text-copy-secondary">
-                                        overs
-                                      </div>
-                                    </div>
+                                  <div className="mt-4 grid grid-cols-3 gap-4 sm:gap-5">
+                                    <StatCell
+                                      label="wkts"
+                                      value={stats?.wicketsTaken ?? 0}
+                                    />
+                                    <StatCell
+                                      label="runs"
+                                      value={stats?.runsConceded ?? 0}
+                                      align="center"
+                                    />
+                                    <StatCell
+                                      label="overs"
+                                      value={stats?.oversBowled ?? '0.0'}
+                                      align="right"
+                                    />
                                   </div>
                                 </div>
                               </div>
