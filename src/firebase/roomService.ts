@@ -1088,12 +1088,10 @@ export const returnPlayerToLobby = async (roomId: string, playerId: string): Pro
         throw new Error('Summary is still syncing. Please wait a moment.');
       }
 
-      if (player.status === 'in_lobby') {
-        return;
-      }
-
       transaction.update(roomRef, {
-        [`players.${playerId}.status`]: 'in_lobby',
+        status: GameStatus.LOBBY,
+        players: resetPlayersForLobby(room.players),
+        gameState: makeDefaultGameState(),
       });
     });
   } catch (error) {

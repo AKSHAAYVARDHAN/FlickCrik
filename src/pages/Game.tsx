@@ -1101,13 +1101,11 @@ export default function Game() {
     if (!roomId || !myId) return;
 
     setReturningToLobby(true);
-    setView('lobby');
 
     try {
       await returnPlayerToLobby(roomId, myId);
     } catch (error: any) {
       setReturningToLobby(false);
-      setView('summary');
       alert(error.message || 'Unable to return to the lobby');
     }
   };
@@ -1122,10 +1120,7 @@ export default function Game() {
     0,
     summaryViewerCount - (view === 'summary' && me && me.status !== 'in_lobby' ? 1 : 0)
   );
-  const showLobbyView =
-    room.status === GameStatus.LOBBY ||
-    (room.status === GameStatus.FINISHED && view === 'lobby');
-  const isPostMatchLobby = room.status === GameStatus.FINISHED && view === 'lobby';
+  const showLobbyView = room.status === GameStatus.LOBBY;
 
   if (showLobbyView) {
     return (
@@ -1137,39 +1132,13 @@ export default function Game() {
           room={room}
           roomId={roomId!}
           senderName={chatSenderName}
-          title={isPostMatchLobby ? 'Post-match lobby' : 'Match lobby'}
-          subtitle={
-            isPostMatchLobby
-              ? summaryViewerCount > 0
-                ? `${summaryViewerCount} player${summaryViewerCount !== 1 ? 's' : ''} still viewing summary`
-                : 'You are back in the lobby'
-              : `${humanCount} player${humanCount !== 1 ? 's' : ''} joined`
-          }
+          title="Match Lobby"
         >
           <div className="space-y-6">
-            {isPostMatchLobby ? (
-              <Card className="panel-section rounded-lg p-4 sm:p-5">
-                <div className="flex items-start gap-3">
-                  <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-brand-yellow" />
-                  <div>
-                    <div className="text-sm font-black text-copy-primary">
-                      You returned to the lobby.
-                    </div>
-                    <p className="mt-1 text-sm font-semibold text-copy-secondary">
-                      {summaryViewerCount > 0
-                        ? `${summaryViewerCount} more player${summaryViewerCount !== 1 ? 's are' : ' is'} still viewing the summary.`
-                        : 'Everyone else has already left the summary.'}
-                    </p>
-                  </div>
-                </div>
-              </Card>
-            ) : null}
-
             <div className="grid gap-4 lg:grid-cols-2">
               <TeamLobbyCard
                 actionLoading={actionLoading}
                 hostId={room.hostId}
-                interactionDisabled={isPostMatchLobby}
                 members={teamAPlayers}
                 me={me}
                 myId={myId}
@@ -1182,7 +1151,6 @@ export default function Game() {
               <TeamLobbyCard
                 actionLoading={actionLoading}
                 hostId={room.hostId}
-                interactionDisabled={isPostMatchLobby}
                 members={teamBPlayers}
                 me={me}
                 myId={myId}
@@ -1194,7 +1162,7 @@ export default function Game() {
               />
             </div>
 
-            {me && !isPostMatchLobby ? (
+            {me ? (
               <Button
                 onClick={() => withLoad(() => switchTeam(roomId!, myId!))}
                 disabled={actionLoading}
@@ -1206,7 +1174,7 @@ export default function Game() {
               </Button>
             ) : null}
 
-            {isPostMatchLobby ? null : isHost ? (
+            {isHost ? (
               <div className="space-y-3">
                 <AnimatePresence initial={false}>
                   {isSinglePlayer ? (
@@ -1274,7 +1242,7 @@ export default function Game() {
                       disabled={playerCount < 2 || actionLoading}
                       icon={Play}
                     >
-                      Start toss
+                      Start Match
                     </Button>
                   </div>
                 ) : null}

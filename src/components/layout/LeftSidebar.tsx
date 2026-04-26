@@ -67,6 +67,7 @@ export default function LeftSidebar({
     () => (Object.values(room.players) as Player[]).sort((a, b) => a.order - b.order),
     [room.players]
   );
+  const isLobby = room.status === 'lobby';
   const activePlayers = allPlayers.filter((player) => player.team === activeTeam);
   const tone = teamTone(activeTeam);
   const wicketsLost = Math.max(0, activePlayers.length - room.gameState.teamWickets[activeTeam]);
@@ -133,28 +134,44 @@ export default function LeftSidebar({
           })}
         </div>
 
-        <div className="panel-section mt-4 rounded-lg p-4">
-          <div className={cn('truncate text-[11px] font-black uppercase tracking-[0.22em]', tone.accent)}>
-            {getTeamName(room, activeTeam)} score
-          </div>
-          <div className="mt-2 flex items-end justify-between gap-3">
-            <div className="text-3xl font-black text-copy-primary tabular-nums">
-              {room.gameState.teamScores[activeTeam]}
+        {isLobby ? (
+          <div className="panel-section mt-4 rounded-lg p-4">
+            <div className={cn('truncate text-[11px] font-black uppercase tracking-[0.22em]', tone.accent)}>
+              {getTeamName(room, activeTeam)}
             </div>
-            <div className="text-right">
-              <div className="flex items-center justify-end gap-1.5 text-xs font-bold text-copy-secondary">
-                <Shield className="h-3.5 w-3.5" />
-                {wicketsLost}/{activePlayers.length}
+            <div className="mt-2 text-2xl font-black text-copy-primary tabular-nums">
+              {activePlayers.length}
+            </div>
+            <div className="mt-1 text-[10px] font-semibold uppercase text-copy-muted">
+              {activePlayers.length === 1 ? 'player ready' : 'players ready'}
+            </div>
+          </div>
+        ) : (
+          <div className="panel-section mt-4 rounded-lg p-4">
+            <div className={cn('truncate text-[11px] font-black uppercase tracking-[0.22em]', tone.accent)}>
+              {getTeamName(room, activeTeam)} score
+            </div>
+            <div className="mt-2 flex items-end justify-between gap-3">
+              <div className="text-3xl font-black text-copy-primary tabular-nums">
+                {room.gameState.teamScores[activeTeam]}
               </div>
-              <div className="mt-0.5 text-[10px] font-semibold uppercase text-copy-muted">wickets</div>
+              <div className="text-right">
+                <div className="flex items-center justify-end gap-1.5 text-xs font-bold text-copy-secondary">
+                  <Shield className="h-3.5 w-3.5" />
+                  {wicketsLost}/{activePlayers.length}
+                </div>
+                <div className="mt-0.5 text-[10px] font-semibold uppercase text-copy-muted">wickets</div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="scrollbar-soft min-h-0 flex-1 overflow-y-auto p-5">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <div className="text-xs font-bold uppercase text-copy-secondary">Scorecard</div>
+          <div className="text-xs font-bold uppercase text-copy-secondary">
+            {isLobby ? 'Roster' : 'Scorecard'}
+          </div>
           <span className={cn('h-2 w-2 rounded-full', tone.dot)} />
         </div>
 
@@ -191,21 +208,31 @@ export default function LeftSidebar({
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {isCurrentPlayer ? <Badge tone="zinc">You</Badge> : null}
-                      {player.isOut ? <Badge tone="red">Out</Badge> : <Badge tone="green">In</Badge>}
+                      {isLobby ? (
+                        <Badge tone={player.isBot ? 'yellow' : 'green'}>
+                          {player.isBot ? 'AI' : 'Ready'}
+                        </Badge>
+                      ) : player.isOut ? (
+                        <Badge tone="red">Out</Badge>
+                      ) : (
+                        <Badge tone="green">In</Badge>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-2.5">
-                  <div className="rounded-lg border border-surface-border bg-surface-950 px-3 py-2.5">
-                    <div className="text-[10px] font-bold uppercase text-copy-muted">Runs</div>
-                    <div className="mt-1 text-2xl font-black leading-none text-copy-primary tabular-nums">{player.score}</div>
+                {isLobby ? null : (
+                  <div className="mt-4 grid grid-cols-2 gap-2.5">
+                    <div className="rounded-lg border border-surface-border bg-surface-950 px-3 py-2.5">
+                      <div className="text-[10px] font-bold uppercase text-copy-muted">Runs</div>
+                      <div className="mt-1 text-2xl font-black leading-none text-copy-primary tabular-nums">{player.score}</div>
+                    </div>
+                    <div className="rounded-lg border border-surface-border bg-surface-950 px-3 py-2.5">
+                      <div className="text-[10px] font-bold uppercase text-copy-muted">Wkts</div>
+                      <div className="mt-1 text-2xl font-black leading-none text-copy-primary tabular-nums">{playerWickets}</div>
+                    </div>
                   </div>
-                  <div className="rounded-lg border border-surface-border bg-surface-950 px-3 py-2.5">
-                    <div className="text-[10px] font-bold uppercase text-copy-muted">Wkts</div>
-                    <div className="mt-1 text-2xl font-black leading-none text-copy-primary tabular-nums">{playerWickets}</div>
-                  </div>
-                </div>
+                )}
               </div>
             );
           })}
