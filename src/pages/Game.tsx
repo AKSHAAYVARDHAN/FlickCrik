@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowLeftRight,
@@ -7,8 +7,10 @@ import {
   Coins,
   Crown,
   Loader2,
+  LogOut,
   Play,
   Plus,
+  Power,
   Shuffle,
   Trophy,
   User,
@@ -33,7 +35,9 @@ import {
   autoAssignTeams,
   chooseTossDecision,
   chooseTossSide,
+  endRoom,
   joinRoom,
+  leaveRoom,
   makeCaptain,
   removeAiPlayer,
   resolveAiTossDecision,
@@ -48,6 +52,8 @@ import {
 import { aiPick } from '../gameLogic/engine';
 import { GameStatus, MatchEvent, Player, Room, TeamId, TossChoice, TossDecision } from '../types';
 import {
+  clearPendingJoinStorageKey,
+  clearRoomPlayerId,
   getPendingJoinStorageKey,
   getStoredRoomPlayerId,
   getStoredPlayerName,
@@ -65,6 +71,7 @@ const TOSS_RESULT_POPUP_DURATION_MS = 2500;
 const MATCH_RESULT_POPUP_DURATION_MS = 2500;
 const AI_TOSS_DECISION_DELAY_MS = 900;
 type GameView = 'game' | 'summary' | 'lobby';
+type RoomActionType = 'exit' | 'end';
 
 function isTossFlowStatus(status: GameStatus | null | undefined): boolean {
   return (
@@ -233,6 +240,13 @@ interface JoinNameGateProps {
   storedName: string | null;
 }
 
+interface RoomActionDialogProps {
+  action: RoomActionType | null;
+  loading: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
 function JoinNameGate({
   error,
   loading,
@@ -334,6 +348,72 @@ function JoinNameGate({
               </Button>
             </form>
           )}
+        </Card>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function RoomActionDialog({
+  action,
+  loading,
+  onCancel,
+  onConfirm,
+}: RoomActionDialogProps) {
+  if (!action) return null;
+
+  const isEndingRoom = action === 'end';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[96] flex items-center justify-center bg-[#050816]/82 px-4 backdrop-blur-md"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.98, y: -10 }}
+        transition={{ duration: 0.24, ease: 'easeOut' }}
+        className="w-full max-w-md"
+      >
+        <Card className="panel-shell rounded-2xl p-6 sm:p-7">
+          <Badge tone={isEndingRoom ? 'red' : 'yellow'} className="mb-4">
+            {isEndingRoom ? 'End room' : 'Exit room'}
+          </Badge>
+
+          <h2 className="text-2xl font-black text-copy-primary">
+            {isEndingRoom
+              ? 'End the room for all players?'
+              : 'Are you sure you want to leave the room?'}
+          </h2>
+          <p className="mt-3 text-sm font-semibold text-copy-secondary">
+            {isEndingRoom
+              ? 'This closes the room, removes every player, and sends everyone back to the home screen.'
+              : 'You will be removed from the room and returned to the home screen.'}
+          </p>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            <Button
+              onClick={onConfirm}
+              loading={loading}
+              variant={isEndingRoom ? 'danger' : 'primary'}
+              size="lg"
+              className="w-full"
+            >
+              Confirm
+            </Button>
+            <Button
+              onClick={onCancel}
+              disabled={loading}
+              variant="outline"
+              size="lg"
+              className="w-full"
+            >
+              Cancel
+            </Button>
+          </div>
         </Card>
       </motion.div>
     </motion.div>
@@ -482,6 +562,7 @@ function TeamLobbyCard({
 
 export default function Game() {
   const { roomId } = useParams<{ roomId: string }>();
+  const navigate = useNavigate();
   const [room, setRoom] = useState<Room | null>(null);
   const [view, setView] = useState<GameView>('game');
   const [playerId, setPlayerId] = useState<string | null>(null);
@@ -501,6 +582,7 @@ export default function Game() {
   const [activeMatchEvent, setActiveMatchEvent] = useState<MatchEvent | null>(null);
   const [pendingMatchEvents, setPendingMatchEvents] = useState<MatchEvent[]>([]);
   const [showMatchResultPopup, setShowMatchResultPopup] = useState(false);
+  const [roomActionType, setRoomActionType] = useState<RoomActionType | null>(null);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -513,6 +595,29 @@ export default function Game() {
   const joinInFlightRef = useRef(false);
   const joinGateInitializedRef = useRef(false);
   const previousRoomStatusRef = useRef<GameStatus | null>(null);
+  const hasBeenRoomMemberRef = useRef(false);
+  const roomExitHandledRef = useRef(false);
+
+  const leaveCurrentRoomView = (targetRoomId: string) => {
+    if (roomExitHandledRef.current) return;
+
+    roomExitHandledRef.current = true;
+    clearRoomPlayerId(targetRoomId);
+    clearPendingJoinStorageKey(targetRoomId);
+    clearSeenInningsPhases(targetRoomId);
+    joinInFlightRef.current = false;
+    joinGateInitializedRef.current = false;
+    hasBeenRoomMemberRef.current = false;
+    setRoomActionType(null);
+    setShowJoinNameGate(false);
+    setJoinError(null);
+    setJoining(false);
+    setActionLoading(false);
+    setReturningToLobby(false);
+    setPlayerId(null);
+    setRoom(null);
+    navigate('/', { replace: true });
+  };
 
   const openJoinNameGate = (preferredMode: JoinIdentityMode = 'edit') => {
     const storedName = getStoredPlayerName();
@@ -545,7 +650,9 @@ export default function Game() {
       const nextPlayerId = await joinRoom(roomId, nextName);
       persistPlayerName(nextName);
       persistRoomPlayerId(roomId, nextPlayerId);
-      sessionStorage.removeItem(getPendingJoinStorageKey(roomId));
+      clearPendingJoinStorageKey(roomId);
+      hasBeenRoomMemberRef.current = true;
+      roomExitHandledRef.current = false;
       setPlayerId(nextPlayerId);
       setJoinName(nextName);
       setShowJoinNameGate(false);
@@ -563,6 +670,11 @@ export default function Game() {
     if (!roomId) return;
 
     const unsubscribe = subscribeToRoom(roomId, (updatedRoom) => {
+      if (updatedRoom.status === GameStatus.ENDED) {
+        leaveCurrentRoomView(roomId);
+        return;
+      }
+
       setRoom(updatedRoom);
 
       const currentId = resolvePlayerId(roomId, playerId);
@@ -573,9 +685,16 @@ export default function Game() {
 
       const isAlreadyInRoom = currentId ? Boolean(updatedRoom.players[currentId]) : false;
       if (isAlreadyInRoom) {
+        hasBeenRoomMemberRef.current = true;
+        roomExitHandledRef.current = false;
         setShowJoinNameGate(false);
         setJoinError(null);
         joinGateInitializedRef.current = false;
+        return;
+      }
+
+      if (hasBeenRoomMemberRef.current) {
+        leaveCurrentRoomView(roomId);
         return;
       }
 
@@ -714,6 +833,8 @@ export default function Game() {
   useEffect(() => {
     joinGateInitializedRef.current = false;
     joinInFlightRef.current = false;
+    hasBeenRoomMemberRef.current = false;
+    roomExitHandledRef.current = false;
     setJoinError(null);
     setShowJoinNameGate(false);
     setJoinIdentityMode('edit');
@@ -727,6 +848,7 @@ export default function Game() {
     setActiveMatchEvent(null);
     setPendingMatchEvents([]);
     setShowMatchResultPopup(false);
+    setRoomActionType(null);
     if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
   }, [roomId]);
 
@@ -1128,6 +1250,26 @@ export default function Game() {
     }
   };
 
+  const handleRoomActionConfirm = async () => {
+    if (!roomId || !myId || !roomActionType) return;
+
+    setActionLoading(true);
+
+    try {
+      if (roomActionType === 'end') {
+        await endRoom(roomId, myId);
+      } else {
+        await leaveRoom(roomId, myId);
+      }
+
+      leaveCurrentRoomView(roomId);
+    } catch (error: any) {
+      alert(error.message || 'Unable to update the room');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const summaryViewerCount = allPlayers.filter(
     (player) =>
       !player.isBot &&
@@ -1150,6 +1292,19 @@ export default function Game() {
         },
       }
     : room;
+
+  const roomActionDialogOverlay = (
+    <AnimatePresence>
+      {roomActionType ? (
+        <RoomActionDialog
+          action={roomActionType}
+          loading={actionLoading}
+          onCancel={() => setRoomActionType(null)}
+          onConfirm={() => void handleRoomActionConfirm()}
+        />
+      ) : null}
+    </AnimatePresence>
+  );
 
   if (showLobbyView) {
     return (
@@ -1214,15 +1369,51 @@ export default function Game() {
             </div>
 
             {me ? (
-              <Button
-                onClick={() => withLoad(() => switchTeam(roomId!, myId!))}
-                disabled={actionLoading || isFinishedLocalLobby}
-                variant={me.team === 'A' ? 'secondary' : 'outline'}
-                icon={ArrowLeftRight}
-                className="w-full"
-              >
-                Switch to {getTeamName(lobbyRoom, me.team === 'A' ? 'B' : 'A')}
-              </Button>
+              <div className="space-y-3">
+                <Button
+                  onClick={() => withLoad(() => switchTeam(roomId!, myId!))}
+                  disabled={actionLoading || isFinishedLocalLobby}
+                  variant={me.team === 'A' ? 'secondary' : 'outline'}
+                  icon={ArrowLeftRight}
+                  className="w-full"
+                >
+                  Switch to {getTeamName(lobbyRoom, me.team === 'A' ? 'B' : 'A')}
+                </Button>
+
+                <Card className="panel-section rounded-lg p-4 sm:p-5">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <Badge tone="zinc">Room controls</Badge>
+                      <p className="mt-3 text-sm font-semibold text-copy-secondary">
+                        Leave on your own, or if you&apos;re the host, close the room for everyone.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-3 sm:min-w-[14rem]">
+                      <Button
+                        onClick={() => setRoomActionType('exit')}
+                        disabled={actionLoading}
+                        variant="outline"
+                        icon={LogOut}
+                        className="w-full"
+                      >
+                        Exit Room
+                      </Button>
+                      {isHost ? (
+                        <Button
+                          onClick={() => setRoomActionType('end')}
+                          disabled={actionLoading}
+                          variant="danger"
+                          icon={Power}
+                          className="w-full"
+                        >
+                          End Room
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                </Card>
+              </div>
             ) : null}
 
             {isFinishedLocalLobby ? (
@@ -1319,6 +1510,7 @@ export default function Game() {
         {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
+        {roomActionDialogOverlay}
       </>
     );
   }
@@ -1505,6 +1697,7 @@ export default function Game() {
         {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
+        {roomActionDialogOverlay}
       </>
     );
   }
@@ -1647,6 +1840,7 @@ export default function Game() {
         {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
+        {roomActionDialogOverlay}
       </>
     );
   }
@@ -1697,6 +1891,7 @@ export default function Game() {
           </MainLayout>
         )}
         {joinNameGateOverlay}
+        {roomActionDialogOverlay}
       </>
     );
   }

@@ -6,6 +6,7 @@ export enum GameStatus {
   DECISION = 'decision',
   PLAYING = 'playing',
   FINISHED = 'finished',
+  ENDED = 'ended',
 }
 
 export type TeamId = 'A' | 'B';

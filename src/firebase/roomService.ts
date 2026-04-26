@@ -156,6 +156,13 @@ function makeDefaultGameState(): GameState {
   };
 }
 
+function makeEndedGameState(): GameState {
+  return {
+    ...makeDefaultGameState(),
+    status: GameStatus.ENDED,
+  };
+}
+
 function makeDefaultTeamNames(): TeamNames {
   return { ...DEFAULT_TEAM_NAMES };
 }
@@ -233,9 +240,30 @@ function resetPlayersForLobby(players: Record<string, Player>): Record<string, P
   return normalizeCaptains(resetPlayers);
 }
 
+function resequencePlayers(players: Record<string, Player>): Record<string, Player> {
+  const nextPlayers: Record<string, Player> = {};
+  let orderA = 0;
+  let orderB = 0;
+
+  for (const player of sortPlayersByOrder(Object.values(players))) {
+    nextPlayers[player.id] = {
+      ...player,
+      order: player.team === 'A' ? orderA++ : orderB++,
+    };
+  }
+
+  return normalizeCaptains(nextPlayers);
+}
+
 function areAllHumanPlayersInLobby(players: Record<string, Player>): boolean {
   const humanPlayers = Object.values(players).filter((player) => !player.isBot);
   return humanPlayers.length > 0 && humanPlayers.every((player) => player.status === 'in_lobby');
+}
+
+function pickNextHostId(players: Record<string, Player>): string | null {
+  const sortedPlayers = sortPlayersByOrder(Object.values(players));
+  const nextHumanHost = sortedPlayers.find((player) => !player.isBot);
+  return nextHumanHost?.id ?? sortedPlayers[0]?.id ?? null;
 }
 
 function normalizeRoomData(room: Room): Room {
@@ -478,6 +506,7 @@ export const joinRoom = async (
   const roomData = normalizeRoomData({ id: roomSnap.id, ...roomSnap.data() } as Room);
 
   if (roomData.status === GameStatus.FINISHED) throw new Error('Game is already finished');
+  if (roomData.status === GameStatus.ENDED) throw new Error('Room has been closed');
   if (Object.keys(roomData.players).length >= MAX_PLAYERS) throw new Error('Room is full');
 
   const playerId = auth.currentUser?.uid || generateId();
@@ -1112,6 +1141,87 @@ export const returnPlayerToLobby = async (roomId: string, playerId: string): Pro
 
       transaction.update(roomRef, {
         [`players.${playerId}.status`]: 'in_lobby',
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
+
+export const leaveRoom = async (roomId: string, playerId: string): Promise<void> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      if (room.status === GameStatus.ENDED) {
+        return;
+      }
+
+      const leavingPlayer = room.players[playerId];
+      if (!leavingPlayer) {
+        return;
+      }
+
+      const remainingPlayers = { ...room.players };
+      delete remainingPlayers[playerId];
+
+      const remainingHumans = Object.values(remainingPlayers).filter((player) => !player.isBot);
+      if (remainingHumans.length === 0) {
+        transaction.update(roomRef, {
+          status: GameStatus.ENDED,
+          players: {},
+          gameState: makeEndedGameState(),
+        });
+        return;
+      }
+
+      const nextHostId =
+        room.hostId === playerId ? pickNextHostId(remainingPlayers) : room.hostId;
+      const nextPlayers = resequencePlayers(remainingPlayers);
+
+      if (room.status === GameStatus.FINISHED && areAllHumanPlayersInLobby(nextPlayers)) {
+        transaction.update(roomRef, {
+          hostId: nextHostId,
+          status: GameStatus.LOBBY,
+          players: resetPlayersForLobby(nextPlayers),
+          gameState: makeDefaultGameState(),
+        });
+        return;
+      }
+
+      transaction.update(roomRef, {
+        hostId: nextHostId,
+        players: nextPlayers,
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
+
+export const endRoom = async (roomId: string, playerId: string): Promise<void> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      if (room.status === GameStatus.ENDED) {
+        return;
+      }
+
+      assertHost(room, playerId, 'end the room');
+
+      transaction.update(roomRef, {
+        status: GameStatus.ENDED,
+        players: {},
+        gameState: makeEndedGameState(),
       });
     });
   } catch (error) {

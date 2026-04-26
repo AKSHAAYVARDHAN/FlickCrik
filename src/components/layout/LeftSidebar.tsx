@@ -44,6 +44,8 @@ function statusLabel(status: Room['status']) {
       return 'Live';
     case 'finished':
       return 'Finished';
+    case 'ended':
+      return 'Closed';
     default:
       return 'Room';
   }

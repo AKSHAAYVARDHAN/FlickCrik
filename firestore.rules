@@ -17,12 +17,13 @@ service cloud.firestore {
       // Anyone can create a room (anonymous gameplay, no auth required)
       allow create: if true;
 
-      // BUG FIX: unified rule covers join, move, and game-end writes.
+      // Unified rule covers room membership, host transfer, team naming,
+      // and match-state writes.
       // The engine sends { players, gameState, status } together,
-      // which the old per-field rules would reject.
+      // while lobby controls can also update { hostId, teamNames }.
       allow update: if (
         incoming().diff(existing()).affectedKeys()
-          .hasOnly(['players', 'status', 'gameState', 'chat'])
+          .hasOnly(['players', 'status', 'gameState', 'chat', 'hostId', 'teamNames'])
         && chatUnchangedOrValid()
       );
     }

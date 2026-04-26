@@ -46,3 +46,13 @@ export function persistRoomPlayerId(roomId: string, playerId: string): void {
   sessionStorage.setItem(storageKey, playerId);
   localStorage.removeItem(storageKey);
 }
+
+export function clearRoomPlayerId(roomId: string): void {
+  const storageKey = getRoomPlayerStorageKey(roomId);
+  sessionStorage.removeItem(storageKey);
+  localStorage.removeItem(storageKey);
+}
+
+export function clearPendingJoinStorageKey(roomId: string): void {
+  sessionStorage.removeItem(getPendingJoinStorageKey(roomId));
+}
