@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { Bot, Crown, RotateCcw, Sparkles, Swords, Trophy } from 'lucide-react';
+import { Bot, Crown, RotateCcw, Sparkles, Trophy } from 'lucide-react';
 import { SUMMARY_VISIBILITY_DELAY_MS } from '../gameLogic/matchSummary';
 import { Player, Room, TeamId } from '../types';
 import { getTeamName } from '../utils/teamNames';
 import { Badge, Button, cn } from './UI';
 
 interface MatchSummaryProps {
-  myTeam: TeamId | null;
   onReturnToLobby: () => void;
   returning: boolean;
   room: Room;
@@ -72,7 +71,6 @@ function formatSummaryLine(runs: number, wicketsLost: number, oversPlayed: strin
 }
 
 export default function MatchSummary({
-  myTeam,
   onReturnToLobby,
   returning,
   room,
@@ -86,7 +84,6 @@ export default function MatchSummary({
   const remainingMs = returnAvailableAt ? Math.max(0, returnAvailableAt - now) : 0;
   const canReturnToLobby = remainingMs <= 0;
   const winnerTeam = gameState.winner && gameState.winner !== 'TIE' ? gameState.winner : null;
-  const myTeamWon = Boolean(myTeam && winnerTeam && myTeam === winnerTeam);
 
   const orderedPlayers = useMemo(
     () => (Object.values(players) as Player[]).sort((a, b) => a.team.localeCompare(b.team) || a.order - b.order),
@@ -172,132 +169,99 @@ export default function MatchSummary({
         </div>
 
         <div className="scrollbar-soft min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-7 sm:py-6">
-          <div className="grid gap-5 xl:grid-cols-[1.1fr_1.5fr]">
-            <div className="space-y-5">
-              <section className="rounded-3xl border border-[#1F2937] bg-surface-900/70 p-5">
-                <div className="mb-4 flex items-center gap-2">
-                  <Trophy className="h-5 w-5 text-brand-yellow" />
-                  <div className="text-sm font-black uppercase tracking-[0.22em] text-copy-secondary">
-                    Match Result
-                  </div>
+          <div className="grid gap-5 xl:grid-cols-2">
+            <section className="rounded-3xl border border-[#1F2937] bg-surface-900/70 p-5">
+              <div className="mb-4 flex items-center gap-2">
+                <Trophy className="h-5 w-5 text-brand-yellow" />
+                <div className="text-sm font-black uppercase tracking-[0.22em] text-copy-secondary">
+                  Match Result
                 </div>
-                <div className="grid gap-3">
-                  {(['A', 'B'] as TeamId[]).map((team) => {
-                    const summary = gameState.teamSummary[team];
-                    const styles = teamTone(team);
+              </div>
+              <div className="grid gap-3">
+                {(['A', 'B'] as TeamId[]).map((team) => {
+                  const summary = gameState.teamSummary[team];
+                  const styles = teamTone(team);
 
-                    return (
-                      <div
-                        key={team}
-                        className={cn(
-                          'rounded-2xl border px-4 py-4',
-                          styles.border,
-                          winnerTeam === team && 'bg-surface-850/90'
-                        )}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className={cn('text-sm font-black', styles.accent)}>
-                              {getTeamName(room, team)}
-                            </div>
-                            <div className="mt-1 text-lg font-black text-copy-primary tabular-nums">
-                              {formatSummaryLine(
-                                summary.runs,
-                                summary.wicketsLost,
-                                summary.oversPlayed
-                              )}
-                            </div>
+                  return (
+                    <div
+                      key={team}
+                      className={cn(
+                        'rounded-2xl border px-4 py-4',
+                        styles.border,
+                        winnerTeam === team && 'bg-surface-850/90'
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className={cn('text-sm font-black', styles.accent)}>
+                            {getTeamName(room, team)}
                           </div>
-                          {winnerTeam === team ? <Badge tone={styles.badge}>Winner</Badge> : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-
-              <section className="rounded-3xl border border-[#1F2937] bg-surface-900/70 p-5">
-                <div className="mb-4 flex items-center gap-2">
-                  <Trophy className="h-5 w-5 text-brand-yellow" />
-                  <div className="text-sm font-black uppercase tracking-[0.22em] text-copy-secondary">
-                    MVP
-                  </div>
-                </div>
-
-                {mvpPlayer && gameState.mvp ? (
-                  <div className="rounded-2xl border border-brand-yellow/30 bg-brand-yellow/10 p-4">
-                    <div className="flex items-start gap-3">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-brand-yellow/30 bg-brand-yellow/10 text-brand-yellow">
-                        {mvpPlayer.isBot ? <Bot className="h-5 w-5" /> : <Trophy className="h-5 w-5" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-xl font-black text-copy-primary">
-                          {getPlayerLabel(mvpPlayer)}
-                        </div>
-                        <div className="mt-1 text-sm font-semibold text-copy-secondary">
-                          {getTeamName(room, mvpPlayer.team)}
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 gap-3">
-                          <div className="rounded-2xl border border-brand-yellow/20 bg-black/10 px-3 py-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-copy-muted">
-                              Runs
-                            </div>
-                            <div className="mt-1 text-2xl font-black text-copy-primary tabular-nums">
-                              {gameState.mvp.runs}
-                            </div>
-                          </div>
-                          <div className="rounded-2xl border border-brand-yellow/20 bg-black/10 px-3 py-2.5">
-                            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-copy-muted">
-                              Wickets
-                            </div>
-                            <div className="mt-1 text-2xl font-black text-copy-primary tabular-nums">
-                              {gameState.mvp.wickets}
-                            </div>
+                          <div className="mt-1 text-lg font-black text-copy-primary tabular-nums">
+                            {formatSummaryLine(
+                              summary.runs,
+                              summary.wicketsLost,
+                              summary.oversPlayed
+                            )}
                           </div>
                         </div>
+                        {winnerTeam === team ? <Badge tone={styles.badge}>Winner</Badge> : null}
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-dashed border-[#1F2937] px-4 py-8 text-center text-sm font-semibold text-copy-muted">
-                    MVP summary will appear here once the scorecard is ready.
-                  </div>
-                )}
-              </section>
-
-              <section className="rounded-3xl border border-[#1F2937] bg-surface-900/70 p-5">
-                <div className="mb-4 flex items-center gap-2">
-                  <Swords className="h-5 w-5 text-copy-secondary" />
-                  <div className="text-sm font-black uppercase tracking-[0.22em] text-copy-secondary">
-                    Snapshot
-                  </div>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-2xl border border-[#1F2937] bg-black/10 px-4 py-4">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-copy-muted">
-                      Final Status
-                    </div>
-                    <div className="mt-2 text-lg font-black text-copy-primary">
-                      {winnerTeam
-                        ? myTeamWon
-                          ? 'Your team won'
-                          : 'Opponent team won'
-                        : 'Draw'}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-[#1F2937] bg-black/10 px-4 py-4">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-copy-muted">
-                      Balls Bowled
-                    </div>
-                    <div className="mt-2 text-lg font-black text-copy-primary tabular-nums">
-                      {gameState.ballHistory.length}
-                    </div>
-                  </div>
-                </div>
-              </section>
-            </div>
+                  );
+                })}
+              </div>
+            </section>
 
             <section className="rounded-3xl border border-[#1F2937] bg-surface-900/70 p-5">
+              <div className="mb-4 flex items-center gap-2">
+                <Trophy className="h-5 w-5 text-brand-yellow" />
+                <div className="text-sm font-black uppercase tracking-[0.22em] text-copy-secondary">
+                  MVP
+                </div>
+              </div>
+
+              {mvpPlayer && gameState.mvp ? (
+                <div className="rounded-2xl border border-brand-yellow/30 bg-brand-yellow/10 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-brand-yellow/30 bg-brand-yellow/10 text-brand-yellow">
+                      {mvpPlayer.isBot ? <Bot className="h-5 w-5" /> : <Trophy className="h-5 w-5" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xl font-black text-copy-primary">
+                        {getPlayerLabel(mvpPlayer)}
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-copy-secondary">
+                        {getTeamName(room, mvpPlayer.team)}
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-3">
+                        <div className="rounded-2xl border border-brand-yellow/20 bg-black/10 px-3 py-2.5">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-copy-muted">
+                            Runs
+                          </div>
+                          <div className="mt-1 text-2xl font-black text-copy-primary tabular-nums">
+                            {gameState.mvp.runs}
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-brand-yellow/20 bg-black/10 px-3 py-2.5">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-copy-muted">
+                            Wickets
+                          </div>
+                          <div className="mt-1 text-2xl font-black text-copy-primary tabular-nums">
+                            {gameState.mvp.wickets}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-[#1F2937] px-4 py-8 text-center text-sm font-semibold text-copy-muted">
+                  MVP summary will appear here once the scorecard is ready.
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-3xl border border-[#1F2937] bg-surface-900/70 p-5 xl:col-span-2">
               <div className="mb-5 flex items-center gap-2">
                 <Trophy className="h-5 w-5 text-copy-secondary" />
                 <div className="text-sm font-black uppercase tracking-[0.22em] text-copy-secondary">
@@ -305,7 +269,7 @@ export default function MatchSummary({
                 </div>
               </div>
 
-              <div className="space-y-6">
+              <div className="grid gap-6 xl:grid-cols-2">
                 {(['A', 'B'] as TeamId[]).map((team) => {
                   const teamPlayers = orderedPlayers.filter((player) => player.team === team);
                   const styles = teamTone(team);

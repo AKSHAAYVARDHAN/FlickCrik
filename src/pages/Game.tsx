@@ -1457,7 +1457,6 @@ export default function Game() {
           title="Match result"
         >
           <MatchSummary
-            myTeam={me?.team || null}
             onReturnToLobby={() => withLoad(() => resetRoom(roomId!))}
             returning={actionLoading}
             room={room}
