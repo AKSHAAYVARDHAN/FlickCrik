@@ -2,6 +2,7 @@ export const PLAYER_NAME_STORAGE_KEY = 'playerName';
 export const LEGACY_PLAYER_NAME_STORAGE_KEY = 'handcrik_name';
 export const PLAYER_ID_STORAGE_PREFIX = 'handcrik_player_';
 export const PENDING_JOIN_NAME_PREFIX = 'handcrik_pending_join_';
+export const ROOM_EXIT_NOTICE_STORAGE_KEY = 'handcrik_room_exit_notice';
 export const PLAYER_NAME_MAX_LENGTH = 24;
 
 export function sanitizePlayerName(value: string): string {
@@ -55,4 +56,14 @@ export function clearRoomPlayerId(roomId: string): void {
 
 export function clearPendingJoinStorageKey(roomId: string): void {
   sessionStorage.removeItem(getPendingJoinStorageKey(roomId));
+}
+
+export function setRoomExitNotice(message: string): void {
+  sessionStorage.setItem(ROOM_EXIT_NOTICE_STORAGE_KEY, message.trim());
+}
+
+export function consumeRoomExitNotice(): string {
+  const message = sessionStorage.getItem(ROOM_EXIT_NOTICE_STORAGE_KEY) ?? '';
+  sessionStorage.removeItem(ROOM_EXIT_NOTICE_STORAGE_KEY);
+  return message;
 }

@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Hash, Play, User } from 'lucide-react';
 import Layout from '../components/Layout';
 import { Badge, Button, Card, GameLogo, InputField } from '../components/UI';
 import { createRoom } from '../firebase/roomService';
 import {
+  consumeRoomExitNotice,
   getPendingJoinStorageKey,
   persistRoomPlayerId,
   persistPlayerName,
@@ -16,10 +17,18 @@ export default function Home() {
   const [name, setName] = useState('');
   const [roomId, setRoomId] = useState('');
   const [loading, setLoading] = useState(false);
+  const [roomExitNotice, setRoomExitNotice] = useState('');
   const navigate = useNavigate();
 
   const cleanName = sanitizePlayerName(name);
   const cleanRoomId = roomId.trim().toUpperCase();
+
+  useEffect(() => {
+    const notice = consumeRoomExitNotice();
+    if (notice) {
+      setRoomExitNotice(notice);
+    }
+  }, []);
 
   const handleCreate = async () => {
     if (!cleanName) return;
@@ -57,6 +66,12 @@ export default function Home() {
         </div>
 
         <div className="space-y-5">
+          {roomExitNotice ? (
+            <div className="rounded-lg border border-brand-red/30 bg-brand-red/10 px-4 py-3 text-sm font-semibold text-[#ffc0ca]">
+              {roomExitNotice}
+            </div>
+          ) : null}
+
           <InputField
             label="Player name"
             icon={User}

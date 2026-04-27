@@ -5,11 +5,15 @@ import { getTeamName } from '../../utils/teamNames';
 import { Badge, Button, Card, cn } from '../UI';
 
 interface LeftSidebarProps {
+  actionLoading?: boolean;
+  canKickPlayers?: boolean;
   className?: string;
   copied: boolean;
+  isHost?: boolean;
   myId?: string | null;
   onClose?: () => void;
   onCopy: () => void;
+  onKickPlayer?: (playerId: string) => void;
   room: Room;
   roomId: string;
 }
@@ -56,11 +60,15 @@ function getPlayerLabel(player: Player) {
 }
 
 export default function LeftSidebar({
+  actionLoading = false,
+  canKickPlayers = false,
   className,
   copied,
+  isHost = false,
   myId,
   onClose,
   onCopy,
+  onKickPlayer,
   room,
   roomId,
 }: LeftSidebarProps) {
@@ -181,6 +189,11 @@ export default function LeftSidebar({
           {activePlayers.map((player) => {
             const playerWickets = wicketsByBowler[player.id] ?? 0;
             const isCurrentPlayer = player.id === myId;
+            const showKickButton =
+              canKickPlayers &&
+              isHost &&
+              !isCurrentPlayer &&
+              typeof onKickPlayer === 'function';
 
             return (
               <div
@@ -235,6 +248,18 @@ export default function LeftSidebar({
                     </div>
                   </div>
                 )}
+
+                {showKickButton ? (
+                  <Button
+                    onClick={() => onKickPlayer(player.id)}
+                    disabled={actionLoading}
+                    variant="ghost"
+                    size="sm"
+                    className="mt-3 w-full"
+                  >
+                    Kick
+                  </Button>
+                ) : null}
               </div>
             );
           })}

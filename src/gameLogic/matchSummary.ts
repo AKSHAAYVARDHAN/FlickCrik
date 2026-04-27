@@ -107,10 +107,17 @@ export function buildMatchSummary(
   players: Record<string, Player>,
   gameState: Pick<
     GameState,
-    'ballHistory' | 'teamScores' | 'currentInnings' | 'battingTeam' | 'target' | 'winner'
+    | 'ballHistory'
+    | 'teamScores'
+    | 'currentInnings'
+    | 'battingTeam'
+    | 'target'
+    | 'winner'
+    | 'playerStats'
   >
 ): Pick<GameState, 'winner' | 'teamSummary' | 'playerStats' | 'mvp'> {
   const playerStats = buildEmptyPlayerStatsMap(players);
+  const fallbackStats = gameState.playerStats ?? {};
   const teamSummary: Record<TeamId, TeamSummary> = {
     A: createEmptyTeamSummary('A'),
     B: createEmptyTeamSummary('B'),
@@ -119,6 +126,8 @@ export function buildMatchSummary(
   for (const ball of gameState.ballHistory ?? []) {
     const battingPlayer = players[ball.battingPlayerId];
     const bowlingPlayer = players[ball.bowlingPlayerId];
+    const battingTeam = battingPlayer?.team ?? fallbackStats[ball.battingPlayerId]?.team ?? null;
+    const bowlingTeam = bowlingPlayer?.team ?? fallbackStats[ball.bowlingPlayerId]?.team ?? null;
 
     if (battingPlayer) {
       const battingStats = playerStats[battingPlayer.id] ?? createEmptyPlayerStats(battingPlayer);
@@ -132,6 +141,14 @@ export function buildMatchSummary(
       const battingTeamSummary = teamSummary[battingPlayer.team];
       battingTeamSummary.ballsPlayed += 1;
       battingTeamSummary.runs = gameState.teamScores[battingPlayer.team] ?? battingTeamSummary.runs;
+      if (ball.isOut) {
+        battingTeamSummary.wicketsLost += 1;
+      }
+      battingTeamSummary.oversPlayed = formatOversFromBalls(battingTeamSummary.ballsPlayed);
+    } else if (battingTeam) {
+      const battingTeamSummary = teamSummary[battingTeam];
+      battingTeamSummary.ballsPlayed += 1;
+      battingTeamSummary.runs = gameState.teamScores[battingTeam] ?? battingTeamSummary.runs;
       if (ball.isOut) {
         battingTeamSummary.wicketsLost += 1;
       }
@@ -150,6 +167,9 @@ export function buildMatchSummary(
 
       const bowlingTeamSummary = teamSummary[bowlingPlayer.team];
       bowlingTeamSummary.runs = gameState.teamScores[bowlingPlayer.team] ?? bowlingTeamSummary.runs;
+    } else if (bowlingTeam) {
+      const bowlingTeamSummary = teamSummary[bowlingTeam];
+      bowlingTeamSummary.runs = gameState.teamScores[bowlingTeam] ?? bowlingTeamSummary.runs;
     }
   }
 

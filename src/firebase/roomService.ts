@@ -89,6 +89,37 @@ function flattenRoomUpdate(updates: Partial<Room>): Record<string, any> {
   return flat;
 }
 
+function buildRoomDocumentUpdate(updates: Partial<Room>): Record<string, any> {
+  const directUpdate: Record<string, any> = {};
+
+  if (updates.players) {
+    // Replacing the whole players map is required for removals such as kick/leave.
+    directUpdate.players = updates.players;
+  }
+
+  if (updates.gameState) {
+    directUpdate.gameState = updates.gameState;
+  }
+
+  if (updates.status !== undefined) {
+    directUpdate.status = updates.status;
+  }
+
+  if (updates.teamNames) {
+    directUpdate.teamNames = updates.teamNames;
+  }
+
+  if ('hostId' in updates && updates.hostId !== undefined) {
+    directUpdate.hostId = updates.hostId;
+  }
+
+  if ('chat' in updates && updates.chat !== undefined) {
+    directUpdate.chat = updates.chat;
+  }
+
+  return directUpdate;
+}
+
 function generateId(len = 10): string {
   return Math.random().toString(36).substring(2, 2 + len);
 }
@@ -290,6 +321,7 @@ function normalizeRoomData(room: Room): Room {
         battingTeam,
         target: room.gameState?.target ?? null,
         winner: room.gameState?.winner ?? null,
+        playerStats: room.gameState?.playerStats ?? {},
       })
     : null;
 
@@ -357,15 +389,18 @@ function normalizeRoomData(room: Room): Room {
         },
       playerStats:
         Object.keys(room.gameState?.playerStats ?? {}).length > 0
-          ? Object.fromEntries(
-              Object.entries(basePlayerStats).map(([playerId, stats]) => [
-                playerId,
-                {
-                  ...stats,
-                  ...(room.gameState?.playerStats?.[playerId] ?? {}),
-                },
-              ])
-            ) as GameState['playerStats']
+          ? {
+              ...(room.gameState?.playerStats ?? {}),
+              ...(Object.fromEntries(
+                Object.entries(basePlayerStats).map(([playerId, stats]) => [
+                  playerId,
+                  {
+                    ...stats,
+                    ...(room.gameState?.playerStats?.[playerId] ?? {}),
+                  },
+                ])
+              ) as GameState['playerStats']),
+            }
           : computedSummary?.playerStats ?? basePlayerStats,
       mvp: room.gameState?.mvp ?? computedSummary?.mvp ?? null,
       finishedAt: room.gameState?.finishedAt ?? null,
@@ -431,6 +466,328 @@ function makePlayingGameState(room: Room, battingTeam: TeamId, decision: TossDec
       completedAt: room.gameState.toss.completedAt,
     },
     playerStats: buildEmptyPlayerStatsMap(players),
+  };
+}
+
+function cloneQueue(queue: GameState['playersQueue']): GameState['playersQueue'] {
+  return {
+    A: [...(queue?.A ?? [])],
+    B: [...(queue?.B ?? [])],
+  };
+}
+
+function getQueue(gameState: GameState, team: TeamId): string[] {
+  const preferredQueue = gameState.playersQueue?.[team];
+  if (Array.isArray(preferredQueue) && preferredQueue.length > 0) {
+    return preferredQueue;
+  }
+
+  return gameState.turnQueue?.[team] ?? [];
+}
+
+function syncCurrentTurn(gameState: GameState) {
+  if (!gameState.currentBatterId || !gameState.currentBowlerId) {
+    gameState.currentTurn = null;
+    return;
+  }
+
+  gameState.currentTurn = {
+    battingPlayerId: gameState.currentBatterId,
+    bowlingPlayerId: gameState.currentBowlerId,
+  };
+}
+
+function clearSelections(players: Record<string, Player>): Record<string, Player> {
+  return Object.fromEntries(
+    Object.entries(players).map(([playerId, player]) => [
+      playerId,
+      {
+        ...player,
+        selection: null,
+      },
+    ])
+  ) as Record<string, Player>;
+}
+
+function countTeamPlayers(players: Record<string, Player>, team: TeamId): number {
+  return Object.values(players).filter((player) => player.team === team).length;
+}
+
+function countActivePlayers(players: Record<string, Player>, team: TeamId): number {
+  return Object.values(players).filter((player) => player.team === team && !player.isOut).length;
+}
+
+function findNextBatterId(
+  queue: string[],
+  currentPlayerId: string | null,
+  players: Record<string, Player>
+): string | null {
+  const available = queue.filter((playerId) => players[playerId] && !players[playerId].isOut);
+  if (available.length === 0) return null;
+
+  if (currentPlayerId && players[currentPlayerId] && !players[currentPlayerId].isOut) {
+    return currentPlayerId;
+  }
+
+  const startIndex = currentPlayerId ? queue.indexOf(currentPlayerId) : -1;
+  for (let offset = 1; offset <= queue.length; offset += 1) {
+    const candidateId = queue[(startIndex + offset + queue.length) % queue.length];
+    if (candidateId && players[candidateId] && !players[candidateId].isOut) {
+      return candidateId;
+    }
+  }
+
+  return available[0] ?? null;
+}
+
+function findNextBowlerId(
+  queue: string[],
+  currentBowlerId: string | null,
+  blockedBowlerId: string | null,
+  players: Record<string, Player>
+): string | null {
+  const available = queue.filter((playerId) => Boolean(players[playerId]));
+  if (available.length === 0) return null;
+
+  if (
+    currentBowlerId &&
+    players[currentBowlerId] &&
+    currentBowlerId !== blockedBowlerId
+  ) {
+    return currentBowlerId;
+  }
+
+  if (available.length === 1) {
+    return available[0];
+  }
+
+  const startIndex = currentBowlerId ? available.indexOf(currentBowlerId) : -1;
+  for (let offset = 1; offset <= available.length; offset += 1) {
+    const candidateId =
+      available[(startIndex + offset + available.length) % available.length];
+    if (candidateId !== blockedBowlerId) {
+      return candidateId;
+    }
+  }
+
+  return available.find((playerId) => playerId !== blockedBowlerId) ?? available[0];
+}
+
+function buildFinishedGameState(
+  gameState: GameState,
+  players: Record<string, Player>,
+  winner?: TeamId | 'TIE' | null
+): GameState {
+  const summary = buildMatchSummary(players, {
+    ...gameState,
+    winner: winner ?? gameState.winner ?? null,
+  });
+
+  return {
+    ...gameState,
+    status: GameStatus.FINISHED,
+    over: true,
+    winner: summary.winner,
+    teamSummary: summary.teamSummary,
+    playerStats: summary.playerStats,
+    mvp: summary.mvp,
+    finishedAt: Date.now(),
+    currentBatterId: null,
+    currentBowlerId: null,
+    currentTurn: null,
+  };
+}
+
+function startNextInningsFromState(
+  gameState: GameState,
+  players: Record<string, Player>,
+  nextBattingTeam: TeamId
+) {
+  const nextBowlingTeam = otherTeam(nextBattingTeam);
+  const battingQueue = getQueue(gameState, nextBattingTeam);
+  const bowlingQueue = getQueue(gameState, nextBowlingTeam);
+
+  gameState.currentInnings = 2;
+  gameState.battingTeam = nextBattingTeam;
+  gameState.bowlingTeam = nextBowlingTeam;
+  gameState.target = gameState.teamScores[otherTeam(nextBattingTeam)] + 1;
+  gameState.ballCount = 0;
+  gameState.overNumber = 1;
+  gameState.lastBowlerId = null;
+  gameState.currentBatterId = findNextBatterId(battingQueue, null, players);
+  gameState.currentBowlerId = findNextBowlerId(bowlingQueue, null, null, players);
+  syncCurrentTurn(gameState);
+}
+
+function buildRoomAfterPlayerRemoval(
+  room: Room,
+  removedPlayerId: string,
+  nextPlayers: Record<string, Player>,
+  nextHostId: string | null
+): Partial<Room> {
+  if (room.status === GameStatus.LOBBY) {
+    return {
+      hostId: nextHostId!,
+      players: nextPlayers,
+    };
+  }
+
+  if (
+    room.status === GameStatus.TOSS ||
+    room.status === GameStatus.TOSS_RESULT ||
+    room.status === GameStatus.DECISION
+  ) {
+    const hasBothTeams =
+      countTeamPlayers(nextPlayers, 'A') > 0 && countTeamPlayers(nextPlayers, 'B') > 0;
+
+    if (!hasBothTeams) {
+      return {
+        hostId: nextHostId!,
+        status: GameStatus.LOBBY,
+        players: resetPlayersForLobby(nextPlayers),
+        gameState: makeDefaultGameState(),
+      };
+    }
+
+    return {
+      hostId: nextHostId!,
+      players: nextPlayers,
+    };
+  }
+
+  if (room.status === GameStatus.FINISHED) {
+    if (areAllHumanPlayersInLobby(nextPlayers)) {
+      return {
+        hostId: nextHostId!,
+        status: GameStatus.LOBBY,
+        players: resetPlayersForLobby(nextPlayers),
+        gameState: makeDefaultGameState(),
+      };
+    }
+
+    return {
+      hostId: nextHostId!,
+      players: nextPlayers,
+    };
+  }
+
+  if (room.status !== GameStatus.PLAYING) {
+    return {
+      hostId: nextHostId!,
+      players: nextPlayers,
+    };
+  }
+
+  const preparedPlayers = clearSelections(nextPlayers);
+  const nextGameState: GameState = {
+    ...room.gameState,
+    status: GameStatus.PLAYING,
+    turnQueue: cloneQueue(room.gameState.turnQueue),
+    playersQueue: cloneQueue(room.gameState.playersQueue ?? room.gameState.turnQueue),
+    teamScores: { ...room.gameState.teamScores },
+    teamWickets: { ...room.gameState.teamWickets },
+    ballHistory: [...(room.gameState.ballHistory ?? [])],
+    matchEvents: [...(room.gameState.matchEvents ?? [])],
+    playerStats: { ...(room.gameState.playerStats ?? {}) },
+  };
+
+  nextGameState.turnQueue = {
+    A: getQueue(room.gameState, 'A').filter((playerId) => playerId !== removedPlayerId && Boolean(preparedPlayers[playerId])),
+    B: getQueue(room.gameState, 'B').filter((playerId) => playerId !== removedPlayerId && Boolean(preparedPlayers[playerId])),
+  };
+  nextGameState.playersQueue = {
+    A: [...nextGameState.turnQueue.A],
+    B: [...nextGameState.turnQueue.B],
+  };
+
+  if (
+    nextGameState.lastResult &&
+    (
+      nextGameState.lastResult.battingPlayerId === removedPlayerId ||
+      nextGameState.lastResult.bowlingPlayerId === removedPlayerId
+    )
+  ) {
+    nextGameState.lastResult = null;
+  }
+
+  const teamACount = countTeamPlayers(preparedPlayers, 'A');
+  const teamBCount = countTeamPlayers(preparedPlayers, 'B');
+
+  if (teamACount === 0 || teamBCount === 0) {
+    const winner = teamACount === 0 ? 'B' : 'A';
+    return {
+      hostId: nextHostId!,
+      status: GameStatus.FINISHED,
+      players: preparedPlayers,
+      gameState: buildFinishedGameState(nextGameState, preparedPlayers, winner),
+    };
+  }
+
+  nextGameState.teamWickets = {
+    A: countActivePlayers(preparedPlayers, 'A'),
+    B: countActivePlayers(preparedPlayers, 'B'),
+  };
+
+  const battingTeam = nextGameState.battingTeam;
+  const bowlingTeam = nextGameState.bowlingTeam;
+  const currentBatterId =
+    room.gameState.currentBatterId ?? room.gameState.currentTurn?.battingPlayerId ?? null;
+  const currentBowlerId =
+    room.gameState.currentBowlerId ?? room.gameState.currentTurn?.bowlingPlayerId ?? null;
+
+  nextGameState.currentBatterId = findNextBatterId(
+    getQueue(nextGameState, battingTeam),
+    currentBatterId,
+    preparedPlayers
+  );
+  nextGameState.currentBowlerId = findNextBowlerId(
+    getQueue(nextGameState, bowlingTeam),
+    currentBowlerId,
+    nextGameState.lastBowlerId ?? null,
+    preparedPlayers
+  );
+
+  if (!nextGameState.currentBatterId) {
+    if (nextGameState.currentInnings === 1) {
+      const nextBattingTeam = otherTeam(battingTeam);
+
+      Object.values(preparedPlayers).forEach((player) => {
+        if (player.team === nextBattingTeam) {
+          player.isOut = false;
+        }
+      });
+
+      startNextInningsFromState(nextGameState, preparedPlayers, nextBattingTeam);
+      nextGameState.teamWickets = {
+        A: countActivePlayers(preparedPlayers, 'A'),
+        B: countActivePlayers(preparedPlayers, 'B'),
+      };
+    } else {
+      return {
+        hostId: nextHostId!,
+        status: GameStatus.FINISHED,
+        players: preparedPlayers,
+        gameState: buildFinishedGameState(nextGameState, preparedPlayers),
+      };
+    }
+  }
+
+  if (!nextGameState.currentBowlerId) {
+    return {
+      hostId: nextHostId!,
+      status: GameStatus.FINISHED,
+      players: preparedPlayers,
+      gameState: buildFinishedGameState(nextGameState, preparedPlayers, nextGameState.battingTeam),
+    };
+  }
+
+  syncCurrentTurn(nextGameState);
+
+  return {
+    hostId: nextHostId!,
+    status: GameStatus.PLAYING,
+    players: preparedPlayers,
+    gameState: nextGameState,
   };
 }
 
@@ -1148,6 +1505,56 @@ export const returnPlayerToLobby = async (roomId: string, playerId: string): Pro
   }
 };
 
+export const kickPlayer = async (
+  roomId: string,
+  hostPlayerId: string,
+  targetPlayerId: string
+): Promise<void> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      if (room.status === GameStatus.ENDED) {
+        return;
+      }
+
+      assertHost(room, hostPlayerId, 'remove a player');
+
+      if (targetPlayerId === room.hostId) {
+        throw new Error('Host cannot remove themselves');
+      }
+
+      const targetPlayer = room.players[targetPlayerId];
+      if (!targetPlayer) {
+        return;
+      }
+
+      const remainingPlayers = { ...room.players };
+      delete remainingPlayers[targetPlayerId];
+
+      const remainingHumans = Object.values(remainingPlayers).filter((player) => !player.isBot);
+      if (remainingHumans.length === 0) {
+        transaction.update(roomRef, {
+          status: GameStatus.ENDED,
+          players: {},
+          gameState: makeEndedGameState(),
+        });
+        return;
+      }
+
+      const nextPlayers = resequencePlayers(remainingPlayers);
+      const updates = buildRoomAfterPlayerRemoval(room, targetPlayerId, nextPlayers, room.hostId);
+      transaction.update(roomRef, buildRoomDocumentUpdate(updates));
+    });
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
+
 export const leaveRoom = async (roomId: string, playerId: string): Promise<void> => {
   const roomRef = doc(db, ROOMS_COLLECTION, roomId);
 
@@ -1182,21 +1589,8 @@ export const leaveRoom = async (roomId: string, playerId: string): Promise<void>
       const nextHostId =
         room.hostId === playerId ? pickNextHostId(remainingPlayers) : room.hostId;
       const nextPlayers = resequencePlayers(remainingPlayers);
-
-      if (room.status === GameStatus.FINISHED && areAllHumanPlayersInLobby(nextPlayers)) {
-        transaction.update(roomRef, {
-          hostId: nextHostId,
-          status: GameStatus.LOBBY,
-          players: resetPlayersForLobby(nextPlayers),
-          gameState: makeDefaultGameState(),
-        });
-        return;
-      }
-
-      transaction.update(roomRef, {
-        hostId: nextHostId,
-        players: nextPlayers,
-      });
+      const updates = buildRoomAfterPlayerRemoval(room, playerId, nextPlayers, nextHostId);
+      transaction.update(roomRef, buildRoomDocumentUpdate(updates));
     });
   } catch (error) {
     handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);

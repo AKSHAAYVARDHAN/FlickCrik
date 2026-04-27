@@ -37,9 +37,9 @@ import {
   chooseTossSide,
   endRoom,
   joinRoom,
+  kickPlayer,
   leaveRoom,
   makeCaptain,
-  removeAiPlayer,
   resolveAiTossDecision,
   returnPlayerToLobby,
   startMatch,
@@ -61,6 +61,7 @@ import {
   persistRoomPlayerId,
   persistPlayerName,
   PLAYER_NAME_MAX_LENGTH,
+  setRoomExitNotice,
   sanitizePlayerName,
 } from '../utils/playerIdentity';
 import { getTeamName, sanitizeTeamName } from '../utils/teamNames';
@@ -213,13 +214,14 @@ function matchResultPopupMessage(room: Room): string {
 
 interface TeamLobbyCardProps {
   actionLoading: boolean;
+  canKickPlayers?: boolean;
   hostId: string;
   interactionDisabled?: boolean;
   members: Player[];
   me: Player | null;
   myId: string | null | undefined;
+  onKickPlayer: (player: Player) => void;
   onMakeCaptain: (playerId: string) => void;
-  onRemoveBot: (playerId: string) => void;
   onRenameTeam: (teamName: string) => void;
   team: TeamId;
   teamName: string;
@@ -245,6 +247,13 @@ interface RoomActionDialogProps {
   loading: boolean;
   onCancel: () => void;
   onConfirm: () => void;
+}
+
+interface KickPlayerDialogProps {
+  loading: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  player: Player | null;
 }
 
 function JoinNameGate({
@@ -420,15 +429,76 @@ function RoomActionDialog({
   );
 }
 
+function KickPlayerDialog({
+  loading,
+  onCancel,
+  onConfirm,
+  player,
+}: KickPlayerDialogProps) {
+  if (!player) return null;
+
+  const playerLabel = player.isBot ? 'AI Bot' : player.name;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[97] flex items-center justify-center bg-[#050816]/82 px-4 backdrop-blur-md"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.98, y: -10 }}
+        transition={{ duration: 0.24, ease: 'easeOut' }}
+        className="w-full max-w-md"
+      >
+        <Card className="panel-shell rounded-2xl p-6 sm:p-7">
+          <Badge tone="red" className="mb-4">Kick player</Badge>
+
+          <h2 className="text-2xl font-black text-copy-primary">
+            Remove this player from the room?
+          </h2>
+          <p className="mt-3 text-sm font-semibold text-copy-secondary">
+            {playerLabel} will be sent back to the match entry screen immediately.
+          </p>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            <Button
+              onClick={onConfirm}
+              loading={loading}
+              variant="danger"
+              size="lg"
+              className="w-full"
+            >
+              Confirm
+            </Button>
+            <Button
+              onClick={onCancel}
+              disabled={loading}
+              variant="outline"
+              size="lg"
+              className="w-full"
+            >
+              Cancel
+            </Button>
+          </div>
+        </Card>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function TeamLobbyCard({
   actionLoading,
+  canKickPlayers = false,
   hostId,
   interactionDisabled = false,
   members,
   me,
   myId,
+  onKickPlayer,
   onMakeCaptain,
-  onRemoveBot,
   onRenameTeam,
   team,
   teamName,
@@ -534,15 +604,16 @@ function TeamLobbyCard({
                     Captain
                   </Button>
                 ) : null}
-                {!interactionDisabled && player.isBot ? (
+                {!interactionDisabled &&
+                canKickPlayers &&
+                player.id !== myId ? (
                   <Button
-                    onClick={() => onRemoveBot(player.id)}
+                    onClick={() => onKickPlayer(player)}
                     disabled={actionLoading}
-                    size="icon"
+                    size="sm"
                     variant="ghost"
-                    aria-label="Remove AI player"
                   >
-                    <X className="h-4 w-4" />
+                    Kick
                   </Button>
                 ) : null}
               </div>
@@ -583,6 +654,7 @@ export default function Game() {
   const [pendingMatchEvents, setPendingMatchEvents] = useState<MatchEvent[]>([]);
   const [showMatchResultPopup, setShowMatchResultPopup] = useState(false);
   const [roomActionType, setRoomActionType] = useState<RoomActionType | null>(null);
+  const [kickTarget, setKickTarget] = useState<Player | null>(null);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -598,10 +670,13 @@ export default function Game() {
   const hasBeenRoomMemberRef = useRef(false);
   const roomExitHandledRef = useRef(false);
 
-  const leaveCurrentRoomView = (targetRoomId: string) => {
+  const leaveCurrentRoomView = (targetRoomId: string, notice?: string) => {
     if (roomExitHandledRef.current) return;
 
     roomExitHandledRef.current = true;
+    if (notice) {
+      setRoomExitNotice(notice);
+    }
     clearRoomPlayerId(targetRoomId);
     clearPendingJoinStorageKey(targetRoomId);
     clearSeenInningsPhases(targetRoomId);
@@ -694,7 +769,7 @@ export default function Game() {
       }
 
       if (hasBeenRoomMemberRef.current) {
-        leaveCurrentRoomView(roomId);
+        leaveCurrentRoomView(roomId, "You've been removed from the room.");
         return;
       }
 
@@ -849,6 +924,7 @@ export default function Game() {
     setPendingMatchEvents([]);
     setShowMatchResultPopup(false);
     setRoomActionType(null);
+    setKickTarget(null);
     if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
   }, [roomId]);
 
@@ -1270,6 +1346,26 @@ export default function Game() {
     }
   };
 
+  const openKickDialog = (player: Player) => {
+    if (!isHost || player.id === myId) return;
+    setKickTarget(player);
+  };
+
+  const handleKickConfirm = async () => {
+    if (!roomId || !myId || !kickTarget) return;
+
+    setActionLoading(true);
+
+    try {
+      await kickPlayer(roomId, myId, kickTarget.id);
+      setKickTarget(null);
+    } catch (error: any) {
+      alert(error.message || 'Unable to remove the player');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const summaryViewerCount = allPlayers.filter(
     (player) =>
       !player.isBot &&
@@ -1306,13 +1402,35 @@ export default function Game() {
     </AnimatePresence>
   );
 
+  const kickPlayerDialogOverlay = (
+    <AnimatePresence>
+      {kickTarget ? (
+        <KickPlayerDialog
+          loading={actionLoading}
+          onCancel={() => setKickTarget(null)}
+          onConfirm={() => void handleKickConfirm()}
+          player={kickTarget}
+        />
+      ) : null}
+    </AnimatePresence>
+  );
+
   if (showLobbyView) {
     return (
       <>
         <MainLayout
+          actionLoading={actionLoading}
+          canKickPlayers={showLobbyView || room.status === GameStatus.PLAYING}
           copied={copied}
+          isHost={isHost}
           myId={myId}
           onCopy={copyLink}
+          onKickPlayer={(targetId) => {
+            const player = room.players[targetId];
+            if (player) {
+              openKickDialog(player);
+            }
+          }}
           room={lobbyRoom}
           roomId={roomId!}
           senderName={chatSenderName}
@@ -1342,26 +1460,28 @@ export default function Game() {
             <div className="grid gap-4 lg:grid-cols-2">
               <TeamLobbyCard
                 actionLoading={actionLoading}
+                canKickPlayers={isHost && !isFinishedLocalLobby}
                 hostId={room.hostId}
                 interactionDisabled={isFinishedLocalLobby}
                 members={teamAPlayers}
                 me={me}
                 myId={myId}
+                onKickPlayer={openKickDialog}
                 onMakeCaptain={(targetId) => withLoad(() => makeCaptain(roomId!, myId!, targetId))}
-                onRemoveBot={(targetId) => withLoad(() => removeAiPlayer(roomId!, targetId))}
                 onRenameTeam={(nextName) => withLoad(() => updateTeamName(roomId!, myId!, 'A', nextName))}
                 team="A"
                 teamName={teamAName}
               />
               <TeamLobbyCard
                 actionLoading={actionLoading}
+                canKickPlayers={isHost && !isFinishedLocalLobby}
                 hostId={room.hostId}
                 interactionDisabled={isFinishedLocalLobby}
                 members={teamBPlayers}
                 me={me}
                 myId={myId}
+                onKickPlayer={openKickDialog}
                 onMakeCaptain={(targetId) => withLoad(() => makeCaptain(roomId!, myId!, targetId))}
-                onRemoveBot={(targetId) => withLoad(() => removeAiPlayer(roomId!, targetId))}
                 onRenameTeam={(nextName) => withLoad(() => updateTeamName(roomId!, myId!, 'B', nextName))}
                 team="B"
                 teamName={teamBName}
@@ -1510,6 +1630,7 @@ export default function Game() {
         {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
+        {kickPlayerDialogOverlay}
         {roomActionDialogOverlay}
       </>
     );
@@ -1522,9 +1643,17 @@ export default function Game() {
     return (
       <>
         <MainLayout
+          actionLoading={actionLoading}
           copied={copied}
+          isHost={isHost}
           myId={myId}
           onCopy={copyLink}
+          onKickPlayer={(targetId) => {
+            const player = room.players[targetId];
+            if (player) {
+              openKickDialog(player);
+            }
+          }}
           room={room}
           roomId={roomId!}
           senderName={chatSenderName}
@@ -1697,6 +1826,7 @@ export default function Game() {
         {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
+        {kickPlayerDialogOverlay}
         {roomActionDialogOverlay}
       </>
     );
@@ -1710,10 +1840,19 @@ export default function Game() {
     return (
       <>
         <MainLayout
+          actionLoading={actionLoading}
+          canKickPlayers={room.status === GameStatus.PLAYING}
           copied={copied}
+          isHost={isHost}
           mainClassName="mx-auto w-full max-w-[76rem] lg:pt-2"
           myId={myId}
           onCopy={copyLink}
+          onKickPlayer={(targetId) => {
+            const player = room.players[targetId];
+            if (player) {
+              openKickDialog(player);
+            }
+          }}
           room={room}
           roomId={roomId!}
           senderName={chatSenderName}
@@ -1840,6 +1979,7 @@ export default function Game() {
         {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
+        {kickPlayerDialogOverlay}
         {roomActionDialogOverlay}
       </>
     );
@@ -1875,9 +2015,17 @@ export default function Game() {
           </AnimatePresence>
         ) : (
           <MainLayout
+            actionLoading={actionLoading}
             copied={copied}
+            isHost={isHost}
             myId={myId}
             onCopy={copyLink}
+            onKickPlayer={(targetId) => {
+              const player = room.players[targetId];
+              if (player) {
+                openKickDialog(player);
+              }
+            }}
             room={room}
             roomId={roomId!}
             senderName={chatSenderName}
@@ -1891,6 +2039,7 @@ export default function Game() {
           </MainLayout>
         )}
         {joinNameGateOverlay}
+        {kickPlayerDialogOverlay}
         {roomActionDialogOverlay}
       </>
     );

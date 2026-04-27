@@ -9,11 +9,15 @@ import LeftSidebar from './LeftSidebar';
 import RightSidebar from './RightSidebar';
 
 interface MainLayoutProps {
+  actionLoading?: boolean;
   children: ReactNode;
+  canKickPlayers?: boolean;
   copied: boolean;
+  isHost?: boolean;
   mainClassName?: string;
   myId?: string | null;
   onCopy: () => void;
+  onKickPlayer?: (playerId: string) => void;
   room: Room;
   roomId: string;
   senderName: string;
@@ -22,11 +26,15 @@ interface MainLayoutProps {
 }
 
 export default function MainLayout({
+  actionLoading = false,
   children,
+  canKickPlayers = false,
   copied,
+  isHost = false,
   mainClassName,
   myId,
   onCopy,
+  onKickPlayer,
   room,
   roomId,
   senderName,
@@ -40,7 +48,17 @@ export default function MainLayout({
     <Layout wide>
       <div className="mx-auto grid w-full max-w-[108rem] gap-4 lg:min-h-[calc(100dvh-3rem)] lg:grid-cols-[272px_minmax(0,1fr)_320px] lg:items-start xl:gap-5 2xl:grid-cols-[296px_minmax(0,1fr)_344px]">
         <aside className="hidden min-h-0 lg:sticky lg:top-6 lg:block lg:h-[calc(100dvh-3rem)]">
-          <LeftSidebar copied={copied} myId={myId} onCopy={onCopy} room={room} roomId={roomId} />
+          <LeftSidebar
+            actionLoading={actionLoading}
+            canKickPlayers={canKickPlayers}
+            copied={copied}
+            isHost={isHost}
+            myId={myId}
+            onCopy={onCopy}
+            onKickPlayer={onKickPlayer}
+            room={room}
+            roomId={roomId}
+          />
         </aside>
 
         <main className="min-w-0 lg:grid lg:min-h-[calc(100dvh-3rem)]">
@@ -120,10 +138,14 @@ export default function MainLayout({
               className="fixed inset-y-0 left-0 z-50 w-[min(86vw,280px)] p-3 lg:hidden"
             >
               <LeftSidebar
+                actionLoading={actionLoading}
+                canKickPlayers={canKickPlayers}
                 copied={copied}
+                isHost={isHost}
                 myId={myId}
                 onClose={() => setLeftOpen(false)}
                 onCopy={onCopy}
+                onKickPlayer={onKickPlayer}
                 room={room}
                 roomId={roomId}
               />

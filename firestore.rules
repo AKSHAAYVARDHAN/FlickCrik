@@ -14,14 +14,21 @@ service cloud.firestore {
       // Anyone can read rooms (needed for room sharing by code)
       allow read: if true;
 
-      // Anyone can create a room (anonymous gameplay, no auth required)
-      allow create: if true;
+      // Rooms are created by an authenticated anonymous Firebase session so we
+      // can enforce host-only mutations at the rules layer.
+      allow create: if request.auth != null
+        && incoming().hostId == request.auth.uid
+        && incoming().players[incoming().hostId].id == request.auth.uid;
 
       // Unified rule covers room membership, host transfer, team naming,
       // and match-state writes.
       // The engine sends { players, gameState, status } together,
       // while lobby controls can also update { hostId, teamNames }.
       allow update: if (
+        request.auth != null
+        && hostChangeIsValid()
+        && playerRemovalIsValid()
+        &&
         incoming().diff(existing()).affectedKeys()
           .hasOnly(['players', 'status', 'gameState', 'chat', 'hostId', 'teamNames'])
         && chatUnchangedOrValid()
@@ -40,5 +47,18 @@ service cloud.firestore {
   function chatUnchangedOrValid() {
     return !incoming().diff(existing()).affectedKeys().hasAny(['chat'])
       || (incoming().chat is list && incoming().chat.size() <= 50);
+  }
+
+  function hostChangeIsValid() {
+    return !incoming().diff(existing()).affectedKeys().hasAny(['hostId'])
+      || request.auth.uid == existing().hostId;
+  }
+
+  function playerRemovalIsValid() {
+    let removedPlayerIds = existing().players.diff(incoming().players).removedKeys();
+
+    return removedPlayerIds.size() == 0
+      || request.auth.uid == existing().hostId
+      || (removedPlayerIds.size() == 1 && removedPlayerIds[0] == request.auth.uid);
   }
 }
