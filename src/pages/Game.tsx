@@ -28,17 +28,21 @@ import MatchSummary from '../components/MatchSummary';
 import MatchEventPopup from '../components/MatchEventPopup';
 import MainLayout from '../components/layout/MainLayout';
 import { Badge, Button, Card, cn, InputField } from '../components/UI';
-import { auth } from '../firebase/config';
 import {
   addAiPlayer,
   advanceTossToDecision,
   autoAssignTeams,
   chooseTossDecision,
   chooseTossSide,
+  createRoom,
   endRoom,
+  heartbeatPlayerPresence,
   joinRoom,
   kickPlayer,
   leaveRoom,
+  markPlayerOffline,
+  PLAYER_HEARTBEAT_INTERVAL_MS,
+  reconcileRoomLifecycle,
   makeCaptain,
   resolveAiTossDecision,
   returnPlayerToLobby,
@@ -78,6 +82,7 @@ const MATCH_RESULT_POPUP_DURATION_MS = 2500;
 const AI_TOSS_DECISION_DELAY_MS = 900;
 type GameView = 'game' | 'summary' | 'lobby';
 type RoomActionType = 'exit' | 'end';
+type RoomLookupState = 'loading' | 'ready' | 'expired';
 
 function isTossFlowStatus(status: GameStatus | null | undefined): boolean {
   return (
@@ -150,7 +155,18 @@ function resolvePlayerId(roomId: string | undefined, playerId: string | null): s
     const storedPlayerId = getStoredRoomPlayerId(roomId);
     if (storedPlayerId) return storedPlayerId;
   }
-  return auth.currentUser?.uid ?? null;
+  return null;
+}
+
+function isExpiredRoomError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : '';
+
+  return /room expired|room not found|room has been closed/i.test(message);
 }
 
 function statusMessageForToss(
@@ -259,6 +275,12 @@ interface KickPlayerDialogProps {
   onCancel: () => void;
   onConfirm: () => void;
   player: Player | null;
+}
+
+interface RoomExpiredViewProps {
+  loading: boolean;
+  onCreateNewRoom: () => void;
+  roomId: string;
 }
 
 function JoinNameGate({
@@ -494,6 +516,37 @@ function KickPlayerDialog({
   );
 }
 
+function RoomExpiredView({
+  loading,
+  onCreateNewRoom,
+  roomId,
+}: RoomExpiredViewProps) {
+  return (
+    <Layout className="items-center">
+      <Card className="panel-shell mx-auto w-full max-w-lg rounded-2xl p-7 text-center sm:p-8">
+        <Badge tone="red" className="mx-auto">Invite unavailable</Badge>
+        <h1 className="mt-5 text-3xl font-black text-copy-primary sm:text-4xl">Room Expired</h1>
+        <p className="mt-3 text-sm font-semibold text-copy-secondary sm:text-base">
+          This room is no longer available. Please create a new room.
+        </p>
+        <div className="mt-7">
+          <Button
+            onClick={onCreateNewRoom}
+            loading={loading}
+            size="lg"
+            className="w-full"
+          >
+            Create New Room
+          </Button>
+        </div>
+        <div className="mt-4 text-xs font-bold uppercase tracking-[0.18em] text-copy-muted">
+          Room code {roomId}
+        </div>
+      </Card>
+    </Layout>
+  );
+}
+
 function TeamLobbyCard({
   actionLoading,
   canKickPlayers = false,
@@ -591,6 +644,7 @@ function TeamLobbyCard({
                   {player.isCaptain ? <Badge tone="yellow" icon={Crown}>Captain</Badge> : null}
                   {player.id === myId ? <Badge tone="zinc">You</Badge> : null}
                   {!player.isBot && player.id === hostId ? <Badge tone="zinc">Host</Badge> : null}
+                  {!player.isBot && !player.isOnline ? <Badge tone="red">Offline</Badge> : null}
                 </div>
               </div>
 
@@ -640,6 +694,7 @@ export default function Game() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const [room, setRoom] = useState<Room | null>(null);
+  const [roomLookupState, setRoomLookupState] = useState<RoomLookupState>('loading');
   const [view, setView] = useState<GameView>('game');
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -674,6 +729,8 @@ export default function Game() {
   const previousRoomStatusRef = useRef<GameStatus | null>(null);
   const hasBeenRoomMemberRef = useRef(false);
   const roomExitHandledRef = useRef(false);
+  const resolvedPlayerId = resolvePlayerId(roomId, playerId);
+  const hasResolvedPlayerInRoom = Boolean(resolvedPlayerId && room?.players[resolvedPlayerId]);
 
   const leaveCurrentRoomView = (targetRoomId: string, notice?: string) => {
     if (roomExitHandledRef.current) return;
@@ -694,6 +751,7 @@ export default function Game() {
     setJoining(false);
     setActionLoading(false);
     setReturningToLobby(false);
+    setRoomLookupState('loading');
     setPlayerId(null);
     setRoom(null);
     navigate('/', { replace: true });
@@ -737,6 +795,15 @@ export default function Game() {
       setJoinName(nextName);
       setShowJoinNameGate(false);
     } catch (error: any) {
+      if (isExpiredRoomError(error)) {
+        clearRoomPlayerId(roomId);
+        clearPendingJoinStorageKey(roomId);
+        setPlayerId(null);
+        setShowJoinNameGate(false);
+        setRoomLookupState('expired');
+        return;
+      }
+
       setJoinIdentityMode('edit');
       setJoinError(error?.message || 'Unable to join room');
       setShowJoinNameGate(true);
@@ -748,29 +815,127 @@ export default function Game() {
 
   useEffect(() => {
     if (!roomId) return;
+    let cancelled = false;
+
+    const bootstrapRoom = async () => {
+      setRoomLookupState('loading');
+
+      try {
+        const nextRoom = await reconcileRoomLifecycle(roomId);
+        if (cancelled) return;
+
+        if (!nextRoom?.isActive) {
+          clearRoomPlayerId(roomId);
+          clearPendingJoinStorageKey(roomId);
+          hasBeenRoomMemberRef.current = false;
+          joinInFlightRef.current = false;
+          joinGateInitializedRef.current = true;
+          setShowJoinNameGate(false);
+          setJoinError(null);
+          setJoining(false);
+          setPlayerId(null);
+          setRoom(nextRoom);
+          setRoomLookupState('expired');
+          return;
+        }
+
+        setRoom(nextRoom);
+        setRoomLookupState('ready');
+
+        const storedPlayerId = getStoredRoomPlayerId(roomId);
+        const validStoredPlayerId =
+          storedPlayerId && nextRoom.players[storedPlayerId] ? storedPlayerId : null;
+
+        if (validStoredPlayerId) {
+          persistRoomPlayerId(roomId, validStoredPlayerId);
+          clearPendingJoinStorageKey(roomId);
+          hasBeenRoomMemberRef.current = true;
+          roomExitHandledRef.current = false;
+          setPlayerId(validStoredPlayerId);
+          setShowJoinNameGate(false);
+          setJoinError(null);
+          joinGateInitializedRef.current = false;
+          return;
+        }
+
+        clearRoomPlayerId(roomId);
+        setPlayerId(null);
+
+        const pendingJoinName = sanitizePlayerName(
+          sessionStorage.getItem(getPendingJoinStorageKey(roomId)) ?? ''
+        );
+
+        if (pendingJoinName && !joinInFlightRef.current) {
+          void completeRoomJoin(pendingJoinName);
+          return;
+        }
+
+        if (!joinGateInitializedRef.current) {
+          openJoinNameGate(isValidPlayerName(getStoredPlayerName()) ? 'confirm' : 'edit');
+        }
+      } catch (error) {
+        if (cancelled) return;
+
+        if (isExpiredRoomError(error)) {
+          clearRoomPlayerId(roomId);
+          clearPendingJoinStorageKey(roomId);
+          setRoom(null);
+          setPlayerId(null);
+          setShowJoinNameGate(false);
+          setRoomLookupState('expired');
+          return;
+        }
+
+        setJoinError(error instanceof Error ? error.message : 'Unable to load room');
+      }
+    };
+
+    void bootstrapRoom();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
+
+  useEffect(() => {
+    if (!roomId || roomLookupState !== 'ready') return;
 
     const unsubscribe = subscribeToRoom(roomId, (updatedRoom) => {
-      if (updatedRoom.status === GameStatus.ENDED) {
-        leaveCurrentRoomView(roomId);
+      setRoom(updatedRoom);
+
+      if (!updatedRoom.isActive) {
+        clearRoomPlayerId(roomId);
+        clearPendingJoinStorageKey(roomId);
+        hasBeenRoomMemberRef.current = false;
+        joinInFlightRef.current = false;
+        joinGateInitializedRef.current = true;
+        setShowJoinNameGate(false);
+        setJoinError(null);
+        setJoining(false);
+        setPlayerId(null);
+        setRoomLookupState('expired');
         return;
       }
 
-      setRoom(updatedRoom);
-
       const currentId = resolvePlayerId(roomId, playerId);
-
-      if (!playerId && currentId) {
-        setPlayerId(currentId);
-      }
-
       const isAlreadyInRoom = currentId ? Boolean(updatedRoom.players[currentId]) : false;
+
       if (isAlreadyInRoom) {
+        if (!playerId) {
+          setPlayerId(currentId);
+        }
+
         hasBeenRoomMemberRef.current = true;
         roomExitHandledRef.current = false;
         setShowJoinNameGate(false);
         setJoinError(null);
         joinGateInitializedRef.current = false;
         return;
+      }
+
+      if (currentId && !updatedRoom.players[currentId]) {
+        clearRoomPlayerId(roomId);
+        setPlayerId(null);
       }
 
       if (hasBeenRoomMemberRef.current) {
@@ -797,7 +962,7 @@ export default function Game() {
     });
 
     return () => unsubscribe();
-  }, [playerId, roomId]);
+  }, [playerId, roomId, roomLookupState]);
 
   useEffect(() => {
     if (!room || !roomId || room.status !== GameStatus.PLAYING) return;
@@ -915,6 +1080,9 @@ export default function Game() {
     joinInFlightRef.current = false;
     hasBeenRoomMemberRef.current = false;
     roomExitHandledRef.current = false;
+    setRoomLookupState('loading');
+    setRoom(null);
+    setPlayerId(null);
     setJoinError(null);
     setShowJoinNameGate(false);
     setJoinIdentityMode('edit');
@@ -937,6 +1105,35 @@ export default function Game() {
     if (!roomId || !playerId) return;
     persistRoomPlayerId(roomId, playerId);
   }, [playerId, roomId]);
+
+  useEffect(() => {
+    if (!roomId || !resolvedPlayerId || !room?.isActive || !hasResolvedPlayerInRoom) return;
+    void heartbeatPlayerPresence(roomId, resolvedPlayerId).catch((error) => {
+      console.warn('Unable to update player presence.', error);
+    });
+
+    const heartbeatTimer = window.setInterval(() => {
+      void heartbeatPlayerPresence(roomId, resolvedPlayerId).catch((error) => {
+        console.warn('Unable to update player presence.', error);
+      });
+    }, PLAYER_HEARTBEAT_INTERVAL_MS);
+
+    return () => window.clearInterval(heartbeatTimer);
+  }, [hasResolvedPlayerInRoom, resolvedPlayerId, room?.isActive, roomId]);
+
+  useEffect(() => {
+    if (!roomId || !resolvedPlayerId || !room?.isActive || !hasResolvedPlayerInRoom) return;
+
+    const handlePageHide = (event: PageTransitionEvent) => {
+      if (event.persisted || roomExitHandledRef.current) return;
+      void markPlayerOffline(roomId, resolvedPlayerId).catch((error) => {
+        console.warn('Unable to mark the player offline during page unload.', error);
+      });
+    };
+
+    window.addEventListener('pagehide', handlePageHide);
+    return () => window.removeEventListener('pagehide', handlePageHide);
+  }, [hasResolvedPlayerInRoom, resolvedPlayerId, room?.isActive, roomId]);
 
   useEffect(() => {
     const currentPlayerId = resolvePlayerId(roomId, playerId);
@@ -973,7 +1170,7 @@ export default function Game() {
     previousRoomStatusRef.current = currentStatus;
   }, [room?.status]);
 
-  const myId = resolvePlayerId(roomId, playerId);
+  const myId = resolvedPlayerId;
   const me = myId && room?.players[myId] ? (room.players[myId] as Player) : null;
   const isHost = myId === room?.hostId;
   const currentTurn = room?.gameState.currentTurn ?? null;
@@ -1196,6 +1393,31 @@ export default function Game() {
     setActiveMatchEvent(null);
   };
 
+  const handleCreateRoomFromExpired = async () => {
+    if (!roomId) return;
+
+    const nextName = sanitizePlayerName(getStoredPlayerName());
+    if (!nextName) {
+      navigate('/', { replace: true });
+      return;
+    }
+
+    setActionLoading(true);
+
+    try {
+      const { roomId: nextRoomId, playerId: nextPlayerId } = await createRoom(nextName);
+      persistPlayerName(nextName);
+      persistRoomPlayerId(nextRoomId, nextPlayerId);
+      clearPendingJoinStorageKey(roomId);
+      clearRoomPlayerId(roomId);
+      navigate(`/room/${nextRoomId}`, { replace: true });
+    } catch (error: any) {
+      alert(error.message || 'Unable to create a new room');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const announcementOverlay = (
     <InningsAnnouncement
       open={showAnnouncement}
@@ -1237,7 +1459,17 @@ export default function Game() {
       />
     ) : null;
 
-  if (!room) {
+  if (roomLookupState === 'expired') {
+    return (
+      <RoomExpiredView
+        loading={actionLoading}
+        onCreateNewRoom={() => void handleCreateRoomFromExpired()}
+        roomId={roomId ?? room?.id ?? 'UNKNOWN'}
+      />
+    );
+  }
+
+  if (roomLookupState === 'loading' || !room) {
     return (
       <>
         <Layout className="items-center">

@@ -18,6 +18,8 @@ service cloud.firestore {
       // can enforce host-only mutations at the rules layer.
       allow create: if request.auth != null
         && incoming().hostId == request.auth.uid
+        && incoming().isActive == true
+        && incoming().expiredAt == null
         && incoming().players[incoming().hostId].id == request.auth.uid;
 
       // Unified rule covers room membership, host transfer, team naming,
@@ -30,7 +32,7 @@ service cloud.firestore {
         && playerRemovalIsValid()
         &&
         incoming().diff(existing()).affectedKeys()
-          .hasOnly(['players', 'status', 'gameState', 'chat', 'hostId', 'teamNames'])
+          .hasOnly(['players', 'status', 'gameState', 'chat', 'hostId', 'teamNames', 'isActive', 'expiredAt'])
         && chatUnchangedOrValid()
       );
     }

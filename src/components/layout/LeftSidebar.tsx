@@ -223,7 +223,9 @@ export default function LeftSidebar({
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {isCurrentPlayer ? <Badge tone="zinc">You</Badge> : null}
-                      {isLobby ? (
+                      {!player.isBot && !player.isOnline ? (
+                        <Badge tone="red">Offline</Badge>
+                      ) : isLobby ? (
                         <Badge tone={player.isBot ? 'yellow' : 'green'}>
                           {player.isBot ? 'AI' : 'Ready'}
                         </Badge>

@@ -24,6 +24,8 @@ export interface Player {
   status: PlayerStatus;
   isCaptain: boolean;
   isBot: boolean;
+  isOnline: boolean;
+  lastSeen: number;
   score: number;       // individual runs scored (batting)
   isOut: boolean;
   selection: SelectionValue | null;
@@ -155,6 +157,8 @@ export interface TossState {
 export interface Room {
   id: string;
   hostId: string;
+  isActive: boolean;
+  expiredAt: number | null;
   status: GameStatus;
   teamNames: TeamNames;
   players: Record<string, Player>;

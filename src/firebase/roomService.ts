@@ -33,6 +33,9 @@ import { DEFAULT_TEAM_NAMES, sanitizeTeamName } from '../utils/teamNames';
 
 const ROOMS_COLLECTION = 'rooms';
 const MAX_PLAYERS = 12;
+export const PLAYER_HEARTBEAT_INTERVAL_MS = 4000;
+export const PLAYER_OFFLINE_THRESHOLD_MS = 10000;
+export const PLAYER_STALE_THRESHOLD_MS = 25000;
 
 function handleFirestoreError(error: any, operationType: any, path: string | null): never {
   const errInfo: FirestoreErrorInfo = {
@@ -83,6 +86,14 @@ function flattenRoomUpdate(updates: Partial<Room>): Record<string, any> {
     flat.status = updates.status;
   }
 
+  if ('isActive' in updates) {
+    flat.isActive = updates.isActive;
+  }
+
+  if ('expiredAt' in updates) {
+    flat.expiredAt = updates.expiredAt;
+  }
+
   if (updates.teamNames) {
     flat.teamNames = updates.teamNames;
   }
@@ -104,6 +115,14 @@ function buildRoomDocumentUpdate(updates: Partial<Room>): Record<string, any> {
 
   if (updates.status !== undefined) {
     directUpdate.status = updates.status;
+  }
+
+  if ('isActive' in updates) {
+    directUpdate.isActive = updates.isActive;
+  }
+
+  if ('expiredAt' in updates) {
+    directUpdate.expiredAt = updates.expiredAt;
   }
 
   if (updates.teamNames) {
@@ -139,6 +158,25 @@ function sortPlayersByOrder(players: Player[]): Player[] {
 
 function normalizePlayerStatus(status: PlayerStatus | undefined): PlayerStatus {
   return status === 'in_lobby' ? 'in_lobby' : 'active';
+}
+
+function currentTimestamp(): number {
+  return Date.now();
+}
+
+function normalizePresence(player: Player, now: number): Player {
+  const lastSeen = typeof player.lastSeen === 'number'
+    ? player.lastSeen
+    : player.isBot
+      ? now
+      : 0;
+  const isOnline = player.isBot ? true : now - lastSeen <= PLAYER_OFFLINE_THRESHOLD_MS;
+
+  return {
+    ...player,
+    isOnline,
+    lastSeen,
+  };
 }
 
 function makeDefaultTossState(selectedBy: TeamId | null = null): TossState {
@@ -195,16 +233,26 @@ function makeEndedGameState(): GameState {
   };
 }
 
+function buildExpiredRoomUpdate(): Partial<Room> {
+  return {
+    status: GameStatus.ENDED,
+    isActive: false,
+    expiredAt: currentTimestamp(),
+    players: {},
+    gameState: makeEndedGameState(),
+  };
+}
+
 function makeDefaultTeamNames(): TeamNames {
   return { ...DEFAULT_TEAM_NAMES };
 }
 
-function normalizeCaptains(players: Record<string, Player>): Record<string, Player> {
+function normalizeCaptains(players: Record<string, Player>, now = currentTimestamp()): Record<string, Player> {
   const normalized = Object.fromEntries(
     Object.entries(players).map(([id, player]) => [
       id,
       {
-        ...player,
+        ...normalizePresence(player, now),
         isCaptain: Boolean(player.isCaptain),
         status: normalizePlayerStatus(player.status),
       },
@@ -299,10 +347,12 @@ function pickNextHostId(players: Record<string, Player>): string | null {
 }
 
 function normalizeRoomData(room: Room): Room {
+  const now = currentTimestamp();
   const status = room.status ?? room.gameState?.status ?? GameStatus.LOBBY;
+  const isActive = room.isActive ?? status !== GameStatus.ENDED;
   const baseState = makeDefaultGameState();
   const battingTeam = room.gameState?.battingTeam ?? baseState.battingTeam;
-  const players = normalizeCaptains(room.players ?? {});
+  const players = normalizeCaptains(room.players ?? {}, now);
   const basePlayerStats = buildEmptyPlayerStatsMap(players);
   const shouldBackfillFinishedSummary =
     status === GameStatus.FINISHED &&
@@ -328,6 +378,8 @@ function normalizeRoomData(room: Room): Room {
 
   return {
     ...room,
+    isActive,
+    expiredAt: room.expiredAt ?? null,
     status,
     teamNames: {
       ...makeDefaultTeamNames(),
@@ -518,6 +570,26 @@ function countTeamPlayers(players: Record<string, Player>, team: TeamId): number
 
 function countActivePlayers(players: Record<string, Player>, team: TeamId): number {
   return Object.values(players).filter((player) => player.team === team && !player.isOut).length;
+}
+
+function humanPlayers(players: Record<string, Player>): Player[] {
+  return Object.values(players).filter((player) => !player.isBot);
+}
+
+function shouldRemoveStalePlayer(player: Player, now: number): boolean {
+  return !player.isBot && now - player.lastSeen > PLAYER_STALE_THRESHOLD_MS;
+}
+
+function normalizePresenceMap(players: Record<string, Player>, now: number): Record<string, Player> {
+  return normalizeCaptains(
+    Object.fromEntries(
+      Object.entries(players).map(([playerId, player]) => [
+        playerId,
+        normalizePresence(player, now),
+      ])
+    ) as Record<string, Player>,
+    now
+  );
 }
 
 function findNextBatterId(
@@ -794,6 +866,107 @@ function buildRoomAfterPlayerRemoval(
   };
 }
 
+function applyRoomUpdateLocally(room: Room, updates: Partial<Room>): Room {
+  return normalizeRoomData({
+    ...room,
+    ...updates,
+    hostId: updates.hostId ?? room.hostId,
+    isActive: updates.isActive ?? room.isActive,
+    expiredAt: updates.expiredAt ?? room.expiredAt,
+    status: updates.status ?? room.status,
+    teamNames: updates.teamNames ?? room.teamNames,
+    players: updates.players ?? room.players,
+    gameState: updates.gameState ?? room.gameState,
+    chat: updates.chat ?? room.chat,
+  } as Room);
+}
+
+function buildRoomAfterBatchPlayerRemoval(
+  room: Room,
+  removedPlayerIds: string[]
+): Partial<Room> | null {
+  let workingRoom = room;
+  let changed = false;
+
+  for (const removedPlayerId of removedPlayerIds) {
+    if (!workingRoom.players[removedPlayerId]) {
+      continue;
+    }
+
+    changed = true;
+    const remainingPlayers = { ...workingRoom.players };
+    delete remainingPlayers[removedPlayerId];
+
+    if (humanPlayers(remainingPlayers).length === 0) {
+      return buildExpiredRoomUpdate();
+    }
+
+    const nextHostId =
+      workingRoom.hostId === removedPlayerId ? pickNextHostId(remainingPlayers) : workingRoom.hostId;
+    const nextPlayers = resequencePlayers(remainingPlayers);
+    const updates = buildRoomAfterPlayerRemoval(
+      workingRoom,
+      removedPlayerId,
+      nextPlayers,
+      nextHostId
+    );
+
+    workingRoom = applyRoomUpdateLocally(workingRoom, updates);
+  }
+
+  if (!changed) {
+    return null;
+  }
+
+  return {
+    hostId: workingRoom.hostId,
+    isActive: true,
+    expiredAt: null,
+    status: workingRoom.status,
+    players: workingRoom.players,
+    gameState: workingRoom.gameState,
+  };
+}
+
+function buildPresenceLifecycleUpdate(room: Room, now = currentTimestamp()): Partial<Room> | null {
+  if (!room.isActive) {
+    return null;
+  }
+
+  const nextPlayers = normalizePresenceMap(room.players, now);
+  if (humanPlayers(nextPlayers).length === 0) {
+    return buildExpiredRoomUpdate();
+  }
+
+  const stalePlayerIds = Object.values(nextPlayers)
+    .filter((player) => shouldRemoveStalePlayer(player, now))
+    .map((player) => player.id);
+
+  if (stalePlayerIds.length > 0) {
+    return buildRoomAfterBatchPlayerRemoval(
+      applyRoomUpdateLocally(room, { players: nextPlayers }),
+      stalePlayerIds
+    );
+  }
+
+  const presenceChanged = Object.values(nextPlayers).some((player) => {
+    const existingPlayer = room.players[player.id];
+    return (
+      !existingPlayer ||
+      existingPlayer.isOnline !== player.isOnline ||
+      existingPlayer.lastSeen !== player.lastSeen
+    );
+  });
+
+  if (!presenceChanged) {
+    return null;
+  }
+
+  return {
+    players: nextPlayers,
+  };
+}
+
 function getCaptain(players: Record<string, Player>, team: TeamId): Player | null {
   return (
     sortPlayersByOrder(Object.values(players).filter((player) => player.team === team))
@@ -818,11 +991,118 @@ function chooseAiTossDecision(): TossDecision {
   return Math.random() < 0.5 ? 'bat' : 'bowl';
 }
 
+export const getRoom = async (roomId: string): Promise<Room | null> => {
+  const snap = await getDoc(doc(db, ROOMS_COLLECTION, roomId));
+  if (!snap.exists()) {
+    return null;
+  }
+
+  return normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+};
+
+export const reconcileRoomLifecycle = async (roomId: string): Promise<Room | null> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+  let resolvedRoom: Room | null = null;
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) {
+        resolvedRoom = null;
+        return;
+      }
+
+      let room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      const updates = buildPresenceLifecycleUpdate(room);
+
+      if (updates) {
+        transaction.update(roomRef, buildRoomDocumentUpdate(updates));
+        room = applyRoomUpdateLocally(room, updates);
+      }
+
+      resolvedRoom = room;
+    });
+
+    return resolvedRoom;
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
+
+export const heartbeatPlayerPresence = async (roomId: string, playerId: string): Promise<void> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) {
+        return;
+      }
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      if (!room.isActive) {
+        return;
+      }
+
+      const player = room.players[playerId];
+      if (!player) {
+        return;
+      }
+
+      const now = currentTimestamp();
+      const nextPlayers = {
+        ...room.players,
+        [playerId]: {
+          ...player,
+          isOnline: true,
+          lastSeen: now,
+        },
+      };
+
+      const updates = buildPresenceLifecycleUpdate(
+        applyRoomUpdateLocally(room, { players: nextPlayers }),
+        now
+      );
+
+      if (updates) {
+        transaction.update(roomRef, buildRoomDocumentUpdate(updates));
+        return;
+      }
+
+      transaction.update(roomRef, {
+        [`players.${playerId}.isOnline`]: true,
+        [`players.${playerId}.lastSeen`]: now,
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
+
+export const markPlayerOffline = async (roomId: string, playerId: string): Promise<void> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+
+  try {
+    const room = await getRoom(roomId);
+    if (!room?.isActive || !room.players[playerId]) {
+      return;
+    }
+
+    await updateDoc(roomRef, {
+      [`players.${playerId}.isOnline`]: false,
+      [`players.${playerId}.lastSeen`]: currentTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
+
 export const createRoom = async (
   playerName: string
 ): Promise<{ roomId: string; playerId: string }> => {
   const roomId = generateRoomId();
   const playerId = auth.currentUser?.uid || generateId();
+  const now = currentTimestamp();
 
   const hostPlayer: Player = {
     id: playerId,
@@ -831,6 +1111,8 @@ export const createRoom = async (
     status: 'active',
     isCaptain: true,
     isBot: false,
+    isOnline: true,
+    lastSeen: now,
     score: 0,
     isOut: false,
     selection: null,
@@ -838,6 +1120,8 @@ export const createRoom = async (
   };
 
   const room: Omit<Room, 'id'> = {
+    isActive: true,
+    expiredAt: null,
     status: GameStatus.LOBBY,
     hostId: playerId,
     teamNames: makeDefaultTeamNames(),
@@ -860,42 +1144,54 @@ export const joinRoom = async (
   playerName: string
 ): Promise<string> => {
   const roomRef = doc(db, ROOMS_COLLECTION, roomId);
-  const roomSnap = await getDoc(roomRef);
-  if (!roomSnap.exists()) throw new Error('Room not found');
-
-  const roomData = normalizeRoomData({ id: roomSnap.id, ...roomSnap.data() } as Room);
-
-  if (roomData.status === GameStatus.FINISHED) throw new Error('Game is already finished');
-  if (roomData.status === GameStatus.ENDED) throw new Error('Room has been closed');
-  if (Object.keys(roomData.players).length >= MAX_PLAYERS) throw new Error('Room is full');
-
   const playerId = auth.currentUser?.uid || generateId();
-  if (roomData.players[playerId]) return playerId;
-
-  const teamACount = Object.values(roomData.players).filter((player) => player.team === 'A').length;
-  const teamBCount = Object.values(roomData.players).filter((player) => player.team === 'B').length;
-  const team: TeamId = teamACount <= teamBCount ? 'A' : 'B';
-  const orderInTeam = team === 'A' ? teamACount : teamBCount;
-
-  const newPlayer: Player = {
-    id: playerId,
-    name: playerName,
-    team,
-    status: 'active',
-    isCaptain: (team === 'A' ? teamACount : teamBCount) === 0,
-    isBot: false,
-    score: 0,
-    isOut: false,
-    selection: null,
-    order: orderInTeam,
-  };
 
   try {
-    const nextPlayers = normalizeCaptains({
-      ...roomData.players,
-      [playerId]: newPlayer,
+    await runTransaction(db, async (transaction) => {
+      const roomSnap = await transaction.get(roomRef);
+      if (!roomSnap.exists()) throw new Error('Room not found');
+
+      let roomData = normalizeRoomData({ id: roomSnap.id, ...roomSnap.data() } as Room);
+      const lifecycleUpdates = buildPresenceLifecycleUpdate(roomData);
+      if (lifecycleUpdates) {
+        roomData = applyRoomUpdateLocally(roomData, lifecycleUpdates);
+        transaction.update(roomRef, buildRoomDocumentUpdate(lifecycleUpdates));
+      }
+
+      if (!roomData.isActive) throw new Error('Room expired');
+      if (roomData.status === GameStatus.FINISHED) throw new Error('Game is already finished');
+      if (Object.keys(roomData.players).length >= MAX_PLAYERS) throw new Error('Room is full');
+      if (roomData.players[playerId]) return;
+
+      const teamACount = Object.values(roomData.players).filter((player) => player.team === 'A').length;
+      const teamBCount = Object.values(roomData.players).filter((player) => player.team === 'B').length;
+      const team: TeamId = teamACount <= teamBCount ? 'A' : 'B';
+      const orderInTeam = team === 'A' ? teamACount : teamBCount;
+      const now = currentTimestamp();
+
+      const newPlayer: Player = {
+        id: playerId,
+        name: playerName,
+        team,
+        status: 'active',
+        isCaptain: (team === 'A' ? teamACount : teamBCount) === 0,
+        isBot: false,
+        isOnline: true,
+        lastSeen: now,
+        score: 0,
+        isOut: false,
+        selection: null,
+        order: orderInTeam,
+      };
+
+      const nextPlayers = normalizeCaptains({
+        ...roomData.players,
+        [playerId]: newPlayer,
+      });
+
+      transaction.update(roomRef, { players: nextPlayers });
     });
-    await updateDoc(roomRef, { players: nextPlayers });
+
     return playerId;
   } catch (error) {
     handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
@@ -995,6 +1291,7 @@ export const addAiPlayer = async (roomId: string, team: TeamId): Promise<void> =
 
   const aiId = `ai_${generateId(6)}`;
   const orderInTeam = team === 'A' ? teamACount : teamBCount;
+  const now = currentTimestamp();
 
   const aiPlayer: Player = {
     id: aiId,
@@ -1003,6 +1300,8 @@ export const addAiPlayer = async (roomId: string, team: TeamId): Promise<void> =
     status: 'active',
     isCaptain: orderInTeam === 0,
     isBot: true,
+    isOnline: true,
+    lastSeen: now,
     score: 0,
     isOut: false,
     selection: null,
@@ -1541,11 +1840,10 @@ export const kickPlayer = async (
 
       const remainingHumans = Object.values(remainingPlayers).filter((player) => !player.isBot);
       if (remainingHumans.length === 0) {
-        transaction.update(roomRef, {
-          status: GameStatus.ENDED,
-          players: {},
-          gameState: makeEndedGameState(),
-        });
+        transaction.update(
+          roomRef,
+          buildRoomDocumentUpdate(buildExpiredRoomUpdate())
+        );
         return;
       }
 
@@ -1581,11 +1879,10 @@ export const leaveRoom = async (roomId: string, playerId: string): Promise<void>
 
       const remainingHumans = Object.values(remainingPlayers).filter((player) => !player.isBot);
       if (remainingHumans.length === 0) {
-        transaction.update(roomRef, {
-          status: GameStatus.ENDED,
-          players: {},
-          gameState: makeEndedGameState(),
-        });
+        transaction.update(
+          roomRef,
+          buildRoomDocumentUpdate(buildExpiredRoomUpdate())
+        );
         return;
       }
 
@@ -1615,11 +1912,7 @@ export const endRoom = async (roomId: string, playerId: string): Promise<void> =
 
       assertHost(room, playerId, 'end the room');
 
-      transaction.update(roomRef, {
-        status: GameStatus.ENDED,
-        players: {},
-        gameState: makeEndedGameState(),
-      });
+      transaction.update(roomRef, buildRoomDocumentUpdate(buildExpiredRoomUpdate()));
     });
   } catch (error) {
     handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
