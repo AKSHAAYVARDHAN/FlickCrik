@@ -9,7 +9,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { SELECTION_OPTIONS } from '../gameLogic/ballRules';
-import { GameState, Player, Room, TeamId, TeamNames } from '../types';
+import { GameState, Player, Room, SelectionValue, TeamId, TeamNames } from '../types';
 import { getTeamName } from '../utils/teamNames';
 import { Badge, Button, Card, cn } from './UI';
 
@@ -227,49 +227,62 @@ interface ControlsProps {
 }
 
 export function GameControls({ onSelect, disabled, selection }: ControlsProps) {
-  return (
-    <div className="grid grid-cols-4 gap-2.5 sm:grid-cols-7 sm:gap-3">
-      {SELECTION_OPTIONS.map((num) => {
-        const selected = selection === num;
-        const isDotBall = num === 0;
+  const renderSelectionButton = (num: SelectionValue) => {
+    const selected = selection === num;
+    const isDotBall = num === 0;
 
-        return (
-          <motion.button
-            key={num}
-            whileHover={!disabled ? { y: -3, scale: 1.03 } : undefined}
-            whileTap={!disabled ? { scale: 0.95 } : undefined}
-            onClick={() => onSelect(num)}
-            disabled={disabled}
-            className={cn(
-              'relative aspect-square min-h-16 overflow-hidden rounded-lg border text-2xl font-black tabular-nums transition duration-200 sm:min-h-0 sm:text-3xl',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-yellow/35 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950',
-              selected
-                ? 'border-brand-yellow-deep bg-brand-yellow text-[#120a00] shadow-[0_14px_26px_rgba(245,183,0,0.22)]'
-                : isDotBall
-                  ? 'border-brand-blue/30 bg-brand-blue/8 text-brand-blue hover:border-brand-blue/45 hover:bg-brand-blue/12 hover:text-brand-blue'
-                  : 'border-surface-border bg-surface-900 text-copy-secondary hover:border-brand-blue/30 hover:bg-surface-850 hover:text-copy-primary',
-              disabled && !selected && 'opacity-35'
-            )}
-          >
-            <span className="relative z-10 flex h-full flex-col items-center justify-center">
-              <span>{num}</span>
-              {isDotBall ? (
-                <span className="mt-1 text-[10px] font-extrabold tracking-[0.18em] sm:text-[11px]">
-                  DOT
-                </span>
-              ) : null}
+    return (
+      <motion.button
+        key={num}
+        whileHover={!disabled ? { y: -3, scale: 1.03 } : undefined}
+        whileTap={!disabled ? { scale: 0.95 } : undefined}
+        onClick={() => onSelect(num)}
+        disabled={disabled}
+        className={cn(
+          'relative aspect-square min-h-16 w-full overflow-hidden rounded-lg border text-2xl font-black tabular-nums transition duration-200 sm:min-h-0 sm:text-3xl',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-yellow/35 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950',
+          selected
+            ? 'border-brand-yellow-deep bg-brand-yellow text-[#120a00] shadow-[0_14px_26px_rgba(245,183,0,0.22)]'
+            : isDotBall
+              ? 'border-brand-blue/30 bg-brand-blue/8 text-brand-blue hover:border-brand-blue/45 hover:bg-brand-blue/12 hover:text-brand-blue'
+              : 'border-surface-border bg-surface-900 text-copy-secondary hover:border-brand-blue/30 hover:bg-surface-850 hover:text-copy-primary',
+          disabled && !selected && 'opacity-35'
+        )}
+      >
+        <span className="relative z-10 flex h-full flex-col items-center justify-center">
+          <span>{num}</span>
+          {isDotBall ? (
+            <span className="mt-1 text-[10px] font-extrabold tracking-[0.18em] sm:text-[11px]">
+              DOT
             </span>
-            {selected ? (
-              <motion.span
-                layoutId="number-selection-glow"
-                className="absolute inset-0 bg-white/10"
-                transition={{ duration: 0.18 }}
-              />
-            ) : null}
-          </motion.button>
-        );
-      })}
-    </div>
+          ) : null}
+        </span>
+        {selected ? (
+          <motion.span
+            layoutId="number-selection-glow"
+            className="absolute inset-0 bg-white/10"
+            transition={{ duration: 0.18 }}
+          />
+        ) : null}
+      </motion.button>
+    );
+  };
+
+  return (
+    <>
+      <div className="space-y-2.5 sm:hidden">
+        <div className="grid grid-cols-4 gap-2.5">
+          {SELECTION_OPTIONS.slice(0, 4).map(renderSelectionButton)}
+        </div>
+        <div className="mx-auto grid w-[calc(75%-0.15625rem)] grid-cols-3 gap-2.5">
+          {SELECTION_OPTIONS.slice(4).map(renderSelectionButton)}
+        </div>
+      </div>
+
+      <div className="hidden sm:grid sm:grid-cols-7 sm:gap-3">
+        {SELECTION_OPTIONS.map(renderSelectionButton)}
+      </div>
+    </>
   );
 }
 
