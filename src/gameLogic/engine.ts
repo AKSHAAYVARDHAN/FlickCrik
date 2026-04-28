@@ -8,19 +8,16 @@ import {
   TeamId,
   TurnQueue,
 } from '../types';
+import {
+  getBallOutcomeLabel,
+  MAX_SELECTION,
+  normalizeBallResult,
+  SELECTION_OPTIONS,
+} from './ballRules';
 import { buildMatchSummary } from './matchSummary';
 
 function biasedRandom(): number {
-  const weights = [1, 2, 3, 4, 3, 2];
-  const total = weights.reduce((a, b) => a + b, 0);
-  let rand = Math.random() * total;
-
-  for (let i = 0; i < weights.length; i += 1) {
-    rand -= weights[i];
-    if (rand <= 0) return i + 1;
-  }
-
-  return 3;
+  return Math.floor(Math.random() * (MAX_SELECTION + 1));
 }
 
 export const botPick = biasedRandom;
@@ -32,7 +29,9 @@ export function aiPick(
 ): number {
   if (history.length < 2) return biasedRandom();
 
-  const freq: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+  const freq = Object.fromEntries(
+    SELECTION_OPTIONS.map((value) => [value, 0])
+  ) as Record<number, number>;
 
   for (const ball of history) {
     if (role === 'batter') {
@@ -195,7 +194,6 @@ export const processTurn = (room: Room): Partial<Room> | null => {
 
   const batterSelection = batter.selection;
   const bowlerSelection = bowler.selection;
-  const isOut = batterSelection === bowlerSelection;
   const battingTeam = gameState.battingTeam;
   const bowlingTeam = gameState.bowlingTeam;
   const battingQueue = getQueue(gameState, battingTeam);
@@ -216,31 +214,25 @@ export const processTurn = (room: Room): Partial<Room> | null => {
 
   const ballInOver = (nextGameState.ballCount ?? 0) + 1;
   const overNumber = nextGameState.overNumber ?? 1;
-  const runs = isOut ? 0 : batterSelection;
-
-  const ball: BallResult = {
+  const ball: BallResult = normalizeBallResult({
     batter: batterSelection,
     bowler: bowlerSelection,
-    isOut,
     innings: nextGameState.currentInnings,
-    runs,
     overNumber,
     ballInOver,
     battingPlayerId: currentBatterId,
     bowlingPlayerId: currentBowlerId,
-  };
+  });
 
   nextGameState.ballHistory.push(ball);
-  nextGameState.lastResult = {
+  nextGameState.lastResult = normalizeBallResult({
     batter: batterSelection,
     bowler: bowlerSelection,
-    isOut,
-    runs,
     overNumber,
     ballInOver,
     battingPlayerId: currentBatterId,
     bowlingPlayerId: currentBowlerId,
-  };
+  });
 
   for (const playerId of Object.keys(nextPlayers)) {
     nextPlayers[playerId].selection = null;
@@ -248,7 +240,7 @@ export const processTurn = (room: Room): Partial<Room> | null => {
 
   nextGameState.ballCount = ballInOver;
 
-  if (isOut) {
+  if (ball.isOut) {
     nextPlayers[currentBatterId].isOut = true;
     nextGameState.teamWickets[battingTeam] -= 1;
 
@@ -257,9 +249,15 @@ export const processTurn = (room: Room): Partial<Room> | null => {
       innings: nextGameState.currentInnings,
       overNumber,
       ballInOver,
-      title: 'WICKET!',
-      subtitle: `Player ${batter.name} is OUT`,
-      detail: `Taken by ${bowler.name}`,
+      title: getBallOutcomeLabel(ball),
+      subtitle:
+        ball.outcome === 'wicket_dot'
+          ? `${batter.name} is OUT on the double-dot trap`
+          : `Player ${batter.name} is OUT`,
+      detail:
+        ball.outcome === 'wicket_dot'
+          ? `${bowler.name} matched the Dot Ball`
+          : `Taken by ${bowler.name}`,
       batterId: currentBatterId,
       bowlerId: currentBowlerId,
       nextPlayerId: null,
@@ -308,8 +306,8 @@ export const processTurn = (room: Room): Partial<Room> | null => {
       }
     }
   } else {
-    nextPlayers[currentBatterId].score += batterSelection;
-    nextGameState.teamScores[battingTeam] += batterSelection;
+    nextPlayers[currentBatterId].score += ball.runs;
+    nextGameState.teamScores[battingTeam] += ball.runs;
 
     if (
       nextGameState.currentInnings === 2 &&

@@ -22,6 +22,7 @@ import {
   TossState,
 } from '../types';
 import { processTurn } from '../gameLogic/engine';
+import { isSelectionValue, MAX_SELECTION, MIN_SELECTION, normalizeBallResult } from '../gameLogic/ballRules';
 import {
   buildEmptyPlayerStatsMap,
   buildMatchSummary,
@@ -376,8 +377,10 @@ function normalizeRoomData(room: Room): Room {
         A: room.gameState?.teamWickets?.A ?? 0,
         B: room.gameState?.teamWickets?.B ?? 0,
       },
-      lastResult: room.gameState?.lastResult ?? null,
-      ballHistory: room.gameState?.ballHistory ?? [],
+      lastResult: room.gameState?.lastResult
+        ? normalizeBallResult(room.gameState.lastResult)
+        : null,
+      ballHistory: (room.gameState?.ballHistory ?? []).map((ball) => normalizeBallResult(ball)),
       latestEvent: room.gameState?.latestEvent ?? null,
       matchEvents: room.gameState?.matchEvents ?? [],
       eventSequence: room.gameState?.eventSequence ?? 0,
@@ -1340,8 +1343,8 @@ export const submitSelection = async (
 ): Promise<void> => {
   const roomRef = doc(db, ROOMS_COLLECTION, roomId);
 
-  if (!Number.isInteger(selection) || selection < 1 || selection > 6) {
-    throw new Error('Selection must be between 1 and 6');
+  if (!isSelectionValue(selection)) {
+    throw new Error(`Selection must be between ${MIN_SELECTION} and ${MAX_SELECTION}`);
   }
 
   try {

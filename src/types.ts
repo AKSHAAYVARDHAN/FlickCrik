@@ -14,6 +14,8 @@ export type TeamNames = Record<TeamId, string>;
 export type TossChoice = 'heads' | 'tails';
 export type TossDecision = 'bat' | 'bowl';
 export type PlayerStatus = 'active' | 'in_lobby';
+export type SelectionValue = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+export type BallOutcome = 'runs' | 'dot' | 'wicket_match' | 'wicket_dot';
 
 export interface Player {
   id: string;
@@ -24,13 +26,14 @@ export interface Player {
   isBot: boolean;
   score: number;       // individual runs scored (batting)
   isOut: boolean;
-  selection: number | null;
+  selection: SelectionValue | null;
   order: number;       // join order within team (used for queue sort)
 }
 
 export interface BallResult {
-  batter: number;
-  bowler: number;
+  batter: SelectionValue;
+  bowler: SelectionValue;
+  outcome: BallOutcome;
   isOut: boolean;
   innings: 1 | 2;
   runs: number;
@@ -119,8 +122,9 @@ export interface GameState {
   teamScores: Record<TeamId, number>;
   teamWickets: Record<TeamId, number>;  // remaining wickets
   lastResult: {
-    batter: number;
-    bowler: number;
+    batter: SelectionValue;
+    bowler: SelectionValue;
+    outcome: BallOutcome;
     isOut: boolean;
     runs: number;
     overNumber: number;

@@ -8,6 +8,7 @@ import {
   Trophy,
   Zap,
 } from 'lucide-react';
+import { SELECTION_OPTIONS } from '../gameLogic/ballRules';
 import { GameState, Player, Room, TeamId, TeamNames } from '../types';
 import { getTeamName } from '../utils/teamNames';
 import { Badge, Button, Card, cn } from './UI';
@@ -227,9 +228,10 @@ interface ControlsProps {
 
 export function GameControls({ onSelect, disabled, selection }: ControlsProps) {
   return (
-    <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-6 sm:gap-3">
-      {[1, 2, 3, 4, 5, 6].map((num) => {
+    <div className="grid grid-cols-4 gap-2.5 sm:grid-cols-7 sm:gap-3">
+      {SELECTION_OPTIONS.map((num) => {
         const selected = selection === num;
+        const isDotBall = num === 0;
 
         return (
           <motion.button
@@ -243,11 +245,20 @@ export function GameControls({ onSelect, disabled, selection }: ControlsProps) {
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-yellow/35 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950',
               selected
                 ? 'border-brand-yellow-deep bg-brand-yellow text-[#120a00] shadow-[0_14px_26px_rgba(245,183,0,0.22)]'
-                : 'border-surface-border bg-surface-900 text-copy-secondary hover:border-brand-blue/30 hover:bg-surface-850 hover:text-copy-primary',
+                : isDotBall
+                  ? 'border-brand-blue/30 bg-brand-blue/8 text-brand-blue hover:border-brand-blue/45 hover:bg-brand-blue/12 hover:text-brand-blue'
+                  : 'border-surface-border bg-surface-900 text-copy-secondary hover:border-brand-blue/30 hover:bg-surface-850 hover:text-copy-primary',
               disabled && !selected && 'opacity-35'
             )}
           >
-            <span className="relative z-10">{num}</span>
+            <span className="relative z-10 flex h-full flex-col items-center justify-center">
+              <span>{num}</span>
+              {isDotBall ? (
+                <span className="mt-1 text-[10px] font-extrabold tracking-[0.18em] sm:text-[11px]">
+                  DOT
+                </span>
+              ) : null}
+            </span>
             {selected ? (
               <motion.span
                 layoutId="number-selection-glow"

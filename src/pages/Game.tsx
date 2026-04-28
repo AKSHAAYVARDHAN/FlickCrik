@@ -49,6 +49,11 @@ import {
   tossCoin,
   updateTeamName,
 } from '../firebase/roomService';
+import {
+  formatSelectionValue,
+  getBallOutcomeDetail,
+  getBallOutcomeLabel,
+} from '../gameLogic/ballRules';
 import { aiPick } from '../gameLogic/engine';
 import { GameStatus, MatchEvent, Player, Room, TeamId, TossChoice, TossDecision } from '../types';
 import {
@@ -1902,7 +1907,7 @@ export default function Game() {
                         animate={{ opacity: [1, 0.45, 1] }}
                         transition={{ repeat: Infinity, duration: 1.4 }}
                       >
-                        <Badge tone="zinc">Pick a number</Badge>
+                        <Badge tone="zinc">Pick a number or Dot</Badge>
                       </motion.div>
                     ) : null}
                   </AnimatePresence>
@@ -1921,20 +1926,31 @@ export default function Game() {
                     initial={{ opacity: 0, y: 16, scale: 0.98 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -12 }}
-                    transition={{ duration: 0.22 }}
+                      transition={{ duration: 0.22 }}
                   >
                     <Card className={cn('panel-section rounded-lg p-4', lastResult.isOut && 'out-flash')}>
                       <div className="mb-3 flex items-center justify-center">
-                        <Badge tone={lastResult.isOut ? 'red' : 'green'}>
-                          {lastResult.isOut ? 'Wicket' : `+${lastResult.runs} runs`}
+                        <Badge
+                          tone={
+                            lastResult.outcome === 'dot'
+                              ? 'zinc'
+                              : lastResult.isOut
+                                ? 'red'
+                                : 'green'
+                          }
+                        >
+                          {getBallOutcomeLabel(lastResult)}
                         </Badge>
+                      </div>
+                      <div className="mb-4 text-center text-xs font-semibold uppercase tracking-[0.18em] text-copy-muted">
+                        {getBallOutcomeDetail(lastResult)}
                       </div>
 
                       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
                         <div className="min-w-0 text-center">
                           <div className="text-xs font-bold text-copy-secondary">Batter</div>
                           <div className={cn('mt-1 text-4xl font-black tabular-nums sm:text-5xl', lastResult.isOut ? 'text-brand-red' : 'text-brand-yellow')}>
-                            {lastResult.batter}
+                            {formatSelectionValue(lastResult.batter)}
                           </div>
                           <div className="mt-0.5 truncate text-xs font-semibold text-copy-muted">
                             {room.players[lastResult.battingPlayerId]?.isBot
@@ -1954,14 +1970,16 @@ export default function Game() {
                             </motion.div>
                           ) : (
                             <div className="rounded-full border border-surface-border bg-surface-900 px-2.5 py-1 text-xs font-black text-copy-secondary">
-                              VS
+                              {lastResult.outcome === 'dot' ? 'DOT' : 'VS'}
                             </div>
                           )}
                         </div>
 
                         <div className="min-w-0 text-center">
                           <div className="text-xs font-bold text-copy-secondary">Bowler</div>
-                          <div className="mt-1 text-4xl font-black text-copy-primary tabular-nums sm:text-5xl">{lastResult.bowler}</div>
+                          <div className="mt-1 text-4xl font-black text-copy-primary tabular-nums sm:text-5xl">
+                            {formatSelectionValue(lastResult.bowler)}
+                          </div>
                           <div className="mt-0.5 truncate text-xs font-semibold text-copy-muted">
                             {room.players[lastResult.bowlingPlayerId]?.isBot
                               ? 'AI Bot'
