@@ -80,6 +80,7 @@ const TOSS_REVEAL_DURATION_MS = 1150;
 const TOSS_RESULT_POPUP_DURATION_MS = 2500;
 const MATCH_RESULT_POPUP_DURATION_MS = 2500;
 const AI_TOSS_DECISION_DELAY_MS = 900;
+const JOIN_REMOVAL_GRACE_MS = 5000;
 type GameView = 'game' | 'summary' | 'lobby';
 type RoomActionType = 'exit' | 'end';
 type RoomLookupState = 'loading' | 'ready' | 'expired';
@@ -167,6 +168,10 @@ function isExpiredRoomError(error: unknown): boolean {
         : '';
 
   return /room expired|room not found|room has been closed/i.test(message);
+}
+
+function isJoinGraceActive(until: number | null): boolean {
+  return typeof until === 'number' && until > Date.now();
 }
 
 function statusMessageForToss(
@@ -726,6 +731,8 @@ export default function Game() {
   const lastSeenMatchEventSequenceRef = useRef(0);
   const joinInFlightRef = useRef(false);
   const joinGateInitializedRef = useRef(false);
+  const pendingJoinPlayerIdRef = useRef<string | null>(null);
+  const joinGraceUntilRef = useRef<number | null>(null);
   const previousRoomStatusRef = useRef<GameStatus | null>(null);
   const hasBeenRoomMemberRef = useRef(false);
   const roomExitHandledRef = useRef(false);
@@ -744,6 +751,8 @@ export default function Game() {
     clearSeenInningsPhases(targetRoomId);
     joinInFlightRef.current = false;
     joinGateInitializedRef.current = false;
+    pendingJoinPlayerIdRef.current = null;
+    joinGraceUntilRef.current = null;
     hasBeenRoomMemberRef.current = false;
     setRoomActionType(null);
     setShowJoinNameGate(false);
@@ -789,13 +798,17 @@ export default function Game() {
       persistPlayerName(nextName);
       persistRoomPlayerId(roomId, nextPlayerId);
       clearPendingJoinStorageKey(roomId);
-      hasBeenRoomMemberRef.current = true;
+      pendingJoinPlayerIdRef.current = nextPlayerId;
+      joinGraceUntilRef.current = Date.now() + JOIN_REMOVAL_GRACE_MS;
+      hasBeenRoomMemberRef.current = false;
       roomExitHandledRef.current = false;
       setPlayerId(nextPlayerId);
       setJoinName(nextName);
       setShowJoinNameGate(false);
     } catch (error: any) {
       if (isExpiredRoomError(error)) {
+        pendingJoinPlayerIdRef.current = null;
+        joinGraceUntilRef.current = null;
         clearRoomPlayerId(roomId);
         clearPendingJoinStorageKey(roomId);
         setPlayerId(null);
@@ -804,6 +817,8 @@ export default function Game() {
         return;
       }
 
+      pendingJoinPlayerIdRef.current = null;
+      joinGraceUntilRef.current = null;
       setJoinIdentityMode('edit');
       setJoinError(error?.message || 'Unable to join room');
       setShowJoinNameGate(true);
@@ -827,6 +842,8 @@ export default function Game() {
         if (!nextRoom?.isActive) {
           clearRoomPlayerId(roomId);
           clearPendingJoinStorageKey(roomId);
+          pendingJoinPlayerIdRef.current = null;
+          joinGraceUntilRef.current = null;
           hasBeenRoomMemberRef.current = false;
           joinInFlightRef.current = false;
           joinGateInitializedRef.current = true;
@@ -849,6 +866,8 @@ export default function Game() {
         if (validStoredPlayerId) {
           persistRoomPlayerId(roomId, validStoredPlayerId);
           clearPendingJoinStorageKey(roomId);
+          pendingJoinPlayerIdRef.current = null;
+          joinGraceUntilRef.current = null;
           hasBeenRoomMemberRef.current = true;
           roomExitHandledRef.current = false;
           setPlayerId(validStoredPlayerId);
@@ -879,6 +898,8 @@ export default function Game() {
         if (isExpiredRoomError(error)) {
           clearRoomPlayerId(roomId);
           clearPendingJoinStorageKey(roomId);
+          pendingJoinPlayerIdRef.current = null;
+          joinGraceUntilRef.current = null;
           setRoom(null);
           setPlayerId(null);
           setShowJoinNameGate(false);
@@ -906,6 +927,8 @@ export default function Game() {
       if (!updatedRoom.isActive) {
         clearRoomPlayerId(roomId);
         clearPendingJoinStorageKey(roomId);
+        pendingJoinPlayerIdRef.current = null;
+        joinGraceUntilRef.current = null;
         hasBeenRoomMemberRef.current = false;
         joinInFlightRef.current = false;
         joinGateInitializedRef.current = true;
@@ -918,6 +941,23 @@ export default function Game() {
       }
 
       const currentId = resolvePlayerId(roomId, playerId);
+      const pendingJoinPlayerId = pendingJoinPlayerIdRef.current;
+      const isPendingJoinConfirmed = Boolean(
+        pendingJoinPlayerId && updatedRoom.players[pendingJoinPlayerId]
+      );
+      const joinGraceActive = isJoinGraceActive(joinGraceUntilRef.current);
+
+      if (isPendingJoinConfirmed) {
+        pendingJoinPlayerIdRef.current = null;
+        joinGraceUntilRef.current = null;
+        hasBeenRoomMemberRef.current = true;
+        roomExitHandledRef.current = false;
+
+        if (playerId !== pendingJoinPlayerId) {
+          setPlayerId(pendingJoinPlayerId);
+        }
+      }
+
       const isAlreadyInRoom = currentId ? Boolean(updatedRoom.players[currentId]) : false;
 
       if (isAlreadyInRoom) {
@@ -925,11 +965,17 @@ export default function Game() {
           setPlayerId(currentId);
         }
 
+        pendingJoinPlayerIdRef.current = null;
+        joinGraceUntilRef.current = null;
         hasBeenRoomMemberRef.current = true;
         roomExitHandledRef.current = false;
         setShowJoinNameGate(false);
         setJoinError(null);
         joinGateInitializedRef.current = false;
+        return;
+      }
+
+      if (joinInFlightRef.current || joinGraceActive) {
         return;
       }
 
@@ -1078,6 +1124,8 @@ export default function Game() {
   useEffect(() => {
     joinGateInitializedRef.current = false;
     joinInFlightRef.current = false;
+    pendingJoinPlayerIdRef.current = null;
+    joinGraceUntilRef.current = null;
     hasBeenRoomMemberRef.current = false;
     roomExitHandledRef.current = false;
     setRoomLookupState('loading');
