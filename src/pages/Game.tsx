@@ -12,7 +12,6 @@ import {
   Plus,
   Power,
   Shuffle,
-  Trophy,
   User,
   X,
 } from 'lucide-react';
@@ -1580,34 +1579,6 @@ export default function Game() {
     />
   );
 
-  const pauseShieldOverlay =
-    isGameplayPaused && !matchPopupState.isOpen ? (
-      <AnimatePresence>
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[82] flex items-center justify-center bg-[#050816]/62 px-4 backdrop-blur-sm"
-        >
-          <motion.div
-            initial={{ opacity: 0, scale: 0.96, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.98, y: -8 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
-            className="panel-shell w-full max-w-sm rounded-2xl border border-white/10 px-6 py-6 text-center"
-          >
-            <Badge tone="yellow" className="mx-auto">Match paused</Badge>
-            <div className="mt-4 text-2xl font-black text-copy-primary">
-              Syncing event
-            </div>
-            <div className="mt-2 text-sm font-semibold text-copy-secondary">
-              Gameplay will resume for everyone after this popup sequence completes.
-            </div>
-          </motion.div>
-        </motion.div>
-      </AnimatePresence>
-    ) : null;
-
   const joinNameGateOverlay =
     showJoinNameGate && roomId ? (
       <JoinNameGate
@@ -2285,9 +2256,7 @@ export default function Game() {
             <div className="space-y-3.5 xl:space-y-4">
               <Card className="panel-section rounded-lg p-3.5 sm:p-4">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-2.5">
-                  {isGameplayPaused ? (
-                    <Badge tone="yellow">Match paused</Badge>
-                  ) : hasManualTurnControl ? (
+                  {hasManualTurnControl ? (
                     <Badge tone="zinc">
                       {iAmBatting ? 'You are batting' : 'You are bowling'}
                     </Badge>
@@ -2313,8 +2282,10 @@ export default function Game() {
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: 1, scale: 1 }}
                         exit={{ opacity: 0 }}
+                        className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] text-copy-muted"
+                        aria-hidden="true"
                       >
-                        <Badge tone="yellow">Waiting for event sync</Badge>
+                        <Loader2 className="h-4 w-4 animate-spin" />
                       </motion.div>
                     ) : hasManualTurnControl ? (
                       <motion.div
@@ -2418,7 +2389,6 @@ export default function Game() {
             </div>
           </motion.div>
         </MainLayout>
-        {pauseShieldOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
         {kickPlayerDialogOverlay}
@@ -2436,17 +2406,13 @@ export default function Game() {
     return (
       <>
         {shouldHoldFinishedSummary ? (
-          <Layout className="items-center">
-            <Card className="panel-shell mx-auto flex w-full max-w-md flex-col items-center justify-center rounded-2xl p-8 text-center">
-              <Badge tone="yellow" className="mx-auto" icon={Trophy}>Match complete</Badge>
-              <div className="mt-4 text-2xl font-black text-copy-primary">
-                Final moments
-              </div>
-              <div className="mt-2 text-sm font-semibold text-copy-secondary">
-                Showing the last match events before the summary.
-              </div>
-            </Card>
-          </Layout>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.24, ease: 'easeOut' }}
+            className="fixed inset-0 z-40 bg-[radial-gradient(circle_at_top,rgba(255,209,102,0.08),transparent_30%),linear-gradient(180deg,rgba(5,8,22,0.96),rgba(5,8,22,1))]"
+            aria-hidden="true"
+          />
         ) : (
           <MainLayout
             actionLoading={actionLoading}
@@ -2472,7 +2438,6 @@ export default function Game() {
             />
           </MainLayout>
         )}
-        {pauseShieldOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
         {kickPlayerDialogOverlay}
