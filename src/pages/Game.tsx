@@ -891,7 +891,7 @@ export default function Game() {
       setRoomLookupState('loading');
 
       try {
-        const nextRoom = await reconcileRoomLifecycle(roomId);
+        const nextRoom = await reconcileRoomLifecycle(roomId, resolvePlayerId(roomId, playerId));
         if (cancelled) return;
 
         if (!nextRoom?.isActive) {

@@ -53,7 +53,27 @@ service cloud.firestore {
 
   function hostChangeIsValid() {
     return !incoming().diff(existing()).affectedKeys().hasAny(['hostId'])
-      || request.auth.uid == existing().hostId;
+      || request.auth.uid == existing().hostId
+      || offlineHostFailoverIsValid();
+  }
+
+  function offlineHostFailoverIsValid() {
+    let existingHostId = existing().hostId;
+    let nextHostId = incoming().hostId;
+
+    return existingHostId is string
+      && nextHostId is string
+      && existingHostId != nextHostId
+      && existing().players.keys().hasAny([request.auth.uid])
+      && incoming().players.keys().hasAny([nextHostId])
+      && existing().players.keys().hasAny([existingHostId])
+      && (existing().players[existingHostId].lastSeen is int
+        || existing().players[existingHostId].lastSeen is float)
+      && request.time.toMillis() - existing().players[existingHostId].lastSeen > 30000
+      && incoming().players[nextHostId].id == nextHostId
+      && incoming().players[nextHostId].isBot == false
+      && incoming().players[nextHostId].isOnline == true
+      && incoming().players[nextHostId].isBotControlled == false;
   }
 
   function playerRemovalIsValid() {

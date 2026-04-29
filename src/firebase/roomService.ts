@@ -347,6 +347,30 @@ function pickNextHostId(players: Record<string, Player>): string | null {
   return nextHumanHost?.id ?? sortedPlayers[0]?.id ?? null;
 }
 
+function sortHostCandidates(players: Record<string, Player>): Player[] {
+  return [...Object.values(players)].sort(
+    (a, b) => a.order - b.order || a.team.localeCompare(b.team) || a.id.localeCompare(b.id)
+  );
+}
+
+function pickOnlineReplacementHostId(players: Record<string, Player>): string | null {
+  const onlineHumans = sortHostCandidates(players).filter(
+    (player) => !player.isBot && player.isOnline && !player.isBotControlled
+  );
+
+  if (onlineHumans.length === 0) {
+    return null;
+  }
+
+  const onlineCaptains = onlineHumans.filter((player) => player.isCaptain);
+  return onlineCaptains[0]?.id ?? onlineHumans[0]?.id ?? null;
+}
+
+function shouldReassignOfflineHost(room: Room, players: Record<string, Player>): boolean {
+  const currentHost = players[room.hostId];
+  return !currentHost || currentHost.isBot || !currentHost.isOnline || currentHost.isBotControlled;
+}
+
 function normalizeRoomData(room: Room): Room {
   const now = currentTimestamp();
   const status = room.status ?? room.gameState?.status ?? GameStatus.LOBBY;
@@ -925,7 +949,15 @@ function buildRoomAfterBatchPlayerRemoval(
   };
 }
 
-function buildPresenceLifecycleUpdate(room: Room, now = currentTimestamp()): Partial<Room> | null {
+interface PresenceLifecycleOptions {
+  allowHostReassignment?: boolean;
+}
+
+function buildPresenceLifecycleUpdate(
+  room: Room,
+  now = currentTimestamp(),
+  options: PresenceLifecycleOptions = {}
+): Partial<Room> | null {
   if (!room.isActive) {
     return null;
   }
@@ -945,12 +977,20 @@ function buildPresenceLifecycleUpdate(room: Room, now = currentTimestamp()): Par
     );
   });
 
-  if (!presenceChanged) {
+  const canReassignHost = options.allowHostReassignment ?? true;
+  const nextHostId =
+    canReassignHost && shouldReassignOfflineHost(room, nextPlayers)
+      ? pickOnlineReplacementHostId(nextPlayers) ?? room.hostId
+      : room.hostId;
+  const hostChanged = nextHostId !== room.hostId;
+
+  if (!presenceChanged && !hostChanged) {
     return null;
   }
 
   return {
     players: nextPlayers,
+    hostId: nextHostId,
   };
 }
 
@@ -987,7 +1027,10 @@ export const getRoom = async (roomId: string): Promise<Room | null> => {
   return normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
 };
 
-export const reconcileRoomLifecycle = async (roomId: string): Promise<Room | null> => {
+export const reconcileRoomLifecycle = async (
+  roomId: string,
+  actorPlayerId?: string | null
+): Promise<Room | null> => {
   const roomRef = doc(db, ROOMS_COLLECTION, roomId);
   let resolvedRoom: Room | null = null;
 
@@ -1000,7 +1043,10 @@ export const reconcileRoomLifecycle = async (roomId: string): Promise<Room | nul
       }
 
       let room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
-      const updates = buildPresenceLifecycleUpdate(room);
+      const allowHostReassignment = Boolean(actorPlayerId && room.players[actorPlayerId]);
+      const updates = buildPresenceLifecycleUpdate(room, currentTimestamp(), {
+        allowHostReassignment,
+      });
 
       if (updates) {
         transaction.update(roomRef, buildRoomDocumentUpdate(updates));
@@ -1049,7 +1095,8 @@ export const heartbeatPlayerPresence = async (roomId: string, playerId: string):
 
       const updates = buildPresenceLifecycleUpdate(
         applyRoomUpdateLocally(room, { players: nextPlayers }),
-        now
+        now,
+        { allowHostReassignment: true }
       );
 
       if (updates) {
@@ -1124,7 +1171,9 @@ export const joinRoom = async (
       if (!roomSnap.exists()) throw new Error('Room not found');
 
       let roomData = normalizeRoomData({ id: roomSnap.id, ...roomSnap.data() } as Room);
-      const lifecycleUpdates = buildPresenceLifecycleUpdate(roomData);
+      const lifecycleUpdates = buildPresenceLifecycleUpdate(roomData, currentTimestamp(), {
+        allowHostReassignment: false,
+      });
       if (lifecycleUpdates) {
         roomData = applyRoomUpdateLocally(roomData, lifecycleUpdates);
         transaction.update(roomRef, buildRoomDocumentUpdate(lifecycleUpdates));
