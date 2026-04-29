@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useEffectEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { X } from 'lucide-react';
 
@@ -37,12 +37,19 @@ export default function InningsAnnouncement({
   onDismiss,
   open,
 }: InningsAnnouncementProps) {
+  const dismissAnnouncement = useEffectEvent(() => {
+    onDismiss();
+  });
+
   useEffect(() => {
     if (!open || !data) return;
 
-    const timeoutId = window.setTimeout(onDismiss, 2500);
+    const timeoutId = window.setTimeout(() => {
+      dismissAnnouncement();
+    }, 2500);
+
     return () => window.clearTimeout(timeoutId);
-  }, [data, onDismiss, open]);
+  }, [data?.phase, data?.role, data?.target, open]);
 
   const infoText = data ? getInfoText(data) : null;
 
@@ -56,7 +63,7 @@ export default function InningsAnnouncement({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.28, ease: 'easeOut' }}
           className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-          onClick={onDismiss}
+          onClick={() => dismissAnnouncement()}
           role="presentation"
         >
           <motion.div
@@ -76,7 +83,7 @@ export default function InningsAnnouncement({
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation();
-                  onDismiss();
+                  dismissAnnouncement();
                 }}
                 aria-label="Dismiss announcement"
                 className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[#1F2937] bg-[#181c22] text-[#9CA3AF] transition hover:text-white"

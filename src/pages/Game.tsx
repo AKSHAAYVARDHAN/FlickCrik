@@ -25,7 +25,7 @@ import {
 } from '../components/GameComponents';
 import InningsAnnouncement, { type AnnouncementData } from '../components/InningsAnnouncement';
 import MatchSummary from '../components/MatchSummary';
-import MatchEventPopup from '../components/MatchEventPopup';
+import MatchEventPopup, { type MatchPopupState } from '../components/MatchEventPopup';
 import MainLayout from '../components/layout/MainLayout';
 import { Badge, Button, Card, cn, InputField } from '../components/UI';
 import {
@@ -236,6 +236,56 @@ function matchResultPopupMessage(room: Room): string {
   }
 
   return 'Match complete';
+}
+
+const EMPTY_MATCH_POPUP_STATE: MatchPopupState = {
+  isOpen: false,
+  type: 'run',
+  message: '',
+  event: null,
+};
+
+function getMatchPopupType(event: MatchEvent): MatchPopupState['type'] {
+  switch (event.type) {
+    case 'wicket':
+      return 'wicket';
+    case 'over_complete':
+      return 'over';
+    default:
+      return 'run';
+  }
+}
+
+function createMatchPopupState(event: MatchEvent): MatchPopupState {
+  return {
+    isOpen: true,
+    type: getMatchPopupType(event),
+    message: event.title,
+    event,
+  };
+}
+
+function selectMatchPopupEvent(events: MatchEvent[]): MatchEvent {
+  const eventPriority: Record<MatchEvent['type'], number> = {
+    wicket: 3,
+    over_complete: 2,
+    next_batter: 1,
+  };
+
+  return events.reduce((selectedEvent, currentEvent) => {
+    const selectedPriority = eventPriority[selectedEvent.type];
+    const currentPriority = eventPriority[currentEvent.type];
+
+    if (currentPriority > selectedPriority) {
+      return currentEvent;
+    }
+
+    if (currentPriority === selectedPriority && currentEvent.sequence > selectedEvent.sequence) {
+      return currentEvent;
+    }
+
+    return selectedEvent;
+  });
 }
 
 interface TeamLobbyCardProps {
@@ -715,8 +765,7 @@ export default function Game() {
   const [revealedTossResult, setRevealedTossResult] = useState<TossChoice | null>(null);
   const [showAnnouncement, setShowAnnouncement] = useState(false);
   const [announcementData, setAnnouncementData] = useState<AnnouncementData | null>(null);
-  const [activeMatchEvent, setActiveMatchEvent] = useState<MatchEvent | null>(null);
-  const [pendingMatchEvents, setPendingMatchEvents] = useState<MatchEvent[]>([]);
+  const [matchPopupState, setMatchPopupState] = useState<MatchPopupState>(EMPTY_MATCH_POPUP_STATE);
   const [showMatchResultPopup, setShowMatchResultPopup] = useState(false);
   const [roomActionType, setRoomActionType] = useState<RoomActionType | null>(null);
   const [kickTarget, setKickTarget] = useState<Player | null>(null);
@@ -1141,8 +1190,7 @@ export default function Game() {
     previousRoomStatusRef.current = null;
     eventStreamInitializedRef.current = false;
     lastSeenMatchEventSequenceRef.current = 0;
-    setActiveMatchEvent(null);
-    setPendingMatchEvents([]);
+    setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
     setShowMatchResultPopup(false);
     setRoomActionType(null);
     setKickTarget(null);
@@ -1327,8 +1375,7 @@ export default function Game() {
       setAnnouncementData(null);
       eventStreamInitializedRef.current = false;
       lastSeenMatchEventSequenceRef.current = 0;
-      setActiveMatchEvent(null);
-      setPendingMatchEvents([]);
+      setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
       return;
     }
 
@@ -1378,28 +1425,16 @@ export default function Game() {
     }
 
     lastSeenMatchEventSequenceRef.current = unseenEvents[unseenEvents.length - 1].sequence;
-    setPendingMatchEvents((currentQueue) => [...currentQueue, ...unseenEvents]);
+    setMatchPopupState(createMatchPopupState(selectMatchPopupEvent(unseenEvents)));
   }, [room]);
 
   useEffect(() => {
-    if (activeMatchEvent || pendingMatchEvents.length === 0) return;
+    if (room?.status === GameStatus.PLAYING) return;
 
-    const [nextEvent, ...remaining] = pendingMatchEvents;
-    setActiveMatchEvent(nextEvent);
-    setPendingMatchEvents(remaining);
-  }, [activeMatchEvent, pendingMatchEvents]);
-
-  useEffect(() => {
-    if (room?.status !== GameStatus.FINISHED) return;
-
-    if (activeMatchEvent) {
-      setActiveMatchEvent(null);
-    }
-
-    if (pendingMatchEvents.length > 0) {
-      setPendingMatchEvents([]);
-    }
-  }, [activeMatchEvent, pendingMatchEvents, room?.status]);
+    setMatchPopupState((currentPopupState) =>
+      currentPopupState.isOpen ? EMPTY_MATCH_POPUP_STATE : currentPopupState
+    );
+  }, [room?.status]);
 
   useEffect(() => {
     if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
@@ -1438,7 +1473,7 @@ export default function Game() {
   };
 
   const dismissMatchEvent = () => {
-    setActiveMatchEvent(null);
+    setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
   };
 
   const handleCreateRoomFromExpired = async () => {
@@ -1476,8 +1511,7 @@ export default function Game() {
 
   const matchEventOverlay = (
     <MatchEventPopup
-      event={activeMatchEvent}
-      open={Boolean(activeMatchEvent)}
+      popupState={matchPopupState}
       onDismiss={dismissMatchEvent}
     />
   );
