@@ -12,6 +12,7 @@ import {
   FirestoreErrorInfo,
   GameState,
   GameStatus,
+  MatchFlowState,
   Player,
   PlayerStatus,
   Room,
@@ -23,7 +24,10 @@ import {
 } from '../types';
 import { processTurn } from '../gameLogic/engine';
 import { isSelectionValue, MAX_SELECTION, MIN_SELECTION, normalizeBallResult } from '../gameLogic/ballRules';
-import { pushMatchEvent } from '../gameLogic/matchEvents';
+import {
+  findNextBlockingMatchEvent,
+  pushMatchEvent,
+} from '../gameLogic/matchEvents';
 import {
   buildEmptyPlayerStatsMap,
   buildMatchSummary,
@@ -193,6 +197,15 @@ function makeDefaultTossState(selectedBy: TeamId | null = null): TossState {
   };
 }
 
+function makeDefaultMatchFlowState(): MatchFlowState {
+  return {
+    isPaused: false,
+    pauseReason: null,
+    pauseUntilEventId: null,
+    pausedAt: null,
+  };
+}
+
 function makeDefaultGameState(): GameState {
   return {
     status: GameStatus.LOBBY,
@@ -218,6 +231,7 @@ function makeDefaultGameState(): GameState {
     latestEvent: null,
     matchEvents: [],
     eventSequence: 0,
+    match: makeDefaultMatchFlowState(),
     teamSummary: {
       A: createEmptyTeamSummary('A'),
       B: createEmptyTeamSummary('B'),
@@ -421,6 +435,10 @@ function normalizeRoomData(room: Room): Room {
       toss: {
         ...baseState.toss,
         ...room.gameState?.toss,
+      },
+      match: {
+        ...baseState.match,
+        ...room.gameState?.match,
       },
       turnQueue: {
         A: room.gameState?.turnQueue?.A ?? room.gameState?.playersQueue?.A ?? [],
@@ -702,6 +720,7 @@ function buildFinishedGameState(
     ...gameState,
     status: GameStatus.FINISHED,
     over: true,
+    match: makeDefaultMatchFlowState(),
     winner: summary.winner,
     teamSummary: summary.teamSummary,
     playerStats: summary.playerStats,
@@ -1741,7 +1760,11 @@ export const submitSelection = async (
       if (!snap.exists()) throw new Error('Room not found');
 
       const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
-      if (room.status !== GameStatus.PLAYING || !room.gameState.currentTurn) {
+      if (
+        room.status !== GameStatus.PLAYING ||
+        !room.gameState.currentTurn ||
+        room.gameState.match.isPaused
+      ) {
         return;
       }
 
@@ -2011,6 +2034,60 @@ export const endRoom = async (roomId: string, playerId: string): Promise<void> =
       assertHost(room, playerId, 'end the room');
 
       transaction.update(roomRef, buildRoomDocumentUpdate(buildExpiredRoomUpdate()));
+    });
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
+
+export const advanceMatchEventPause = async (
+  roomId: string,
+  eventId: string
+): Promise<void> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      const matchState = room.gameState.match;
+
+      if (
+        !matchState.isPaused ||
+        matchState.pauseReason !== 'EVENT' ||
+        matchState.pauseUntilEventId !== eventId
+      ) {
+        return;
+      }
+
+      const currentEvent = room.gameState.matchEvents.find((event) => event.id === eventId);
+      if (!currentEvent) {
+        const nextMatchState = makeDefaultMatchFlowState();
+        transaction.update(roomRef, flattenRoomUpdate({ gameState: { match: nextMatchState } as Partial<GameState> }));
+        return;
+      }
+
+      const nextBlockingEvent = findNextBlockingMatchEvent(
+        room.gameState.matchEvents,
+        currentEvent.sequence
+      );
+
+      const nextMatchState: MatchFlowState = nextBlockingEvent
+        ? {
+            ...room.gameState.match,
+            isPaused: true,
+            pauseReason: 'EVENT',
+            pauseUntilEventId: nextBlockingEvent.id,
+            pausedAt: Date.now(),
+          }
+        : makeDefaultMatchFlowState();
+
+      transaction.update(
+        roomRef,
+        flattenRoomUpdate({ gameState: { match: nextMatchState } as Partial<GameState> })
+      );
     });
   } catch (error) {
     handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);

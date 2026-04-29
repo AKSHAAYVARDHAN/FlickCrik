@@ -29,6 +29,7 @@ import MainLayout from '../components/layout/MainLayout';
 import { Badge, Button, Card, cn, InputField } from '../components/UI';
 import {
   addAiPlayer,
+  advanceMatchEventPause,
   advanceTossToDecision,
   autoAssignTeams,
   chooseTossDecision,
@@ -57,6 +58,10 @@ import {
   getBallOutcomeDetail,
   getBallOutcomeLabel,
 } from '../gameLogic/ballRules';
+import {
+  isBlockingMatchEventType,
+  MATCH_EVENT_PAUSE_FAILSAFE_MS,
+} from '../gameLogic/matchEvents';
 import { aiPick } from '../gameLogic/engine';
 import { GameStatus, MatchEvent, Player, Room, TeamId, TossChoice, TossDecision } from '../types';
 import {
@@ -220,12 +225,20 @@ function createMatchPopupState(event: MatchEvent): MatchPopupState {
 }
 
 function isPopupMatchEvent(event: MatchEvent): boolean {
-  return (
-    event.type === 'wicket' ||
-    event.type === 'over_complete' ||
-    event.type === 'innings_start' ||
-    event.type === 'match_result'
-  );
+  return isBlockingMatchEventType(event.type);
+}
+
+function getQueuedPauseEvents(matchEvents: MatchEvent[], pauseUntilEventId: string | null): MatchEvent[] {
+  if (!pauseUntilEventId) {
+    return [];
+  }
+
+  const pauseEventIndex = matchEvents.findIndex((event) => event.id === pauseUntilEventId);
+  if (pauseEventIndex < 0) {
+    return [];
+  }
+
+  return matchEvents.slice(pauseEventIndex).filter(isPopupMatchEvent);
 }
 
 interface TeamLobbyCardProps {
@@ -725,6 +738,7 @@ export default function Game() {
   const previousRoomStatusRef = useRef<GameStatus | null>(null);
   const hasBeenRoomMemberRef = useRef(false);
   const roomExitHandledRef = useRef(false);
+  const pauseAdvanceInFlightRef = useRef<string | null>(null);
   const resolvedPlayerId = resolvePlayerId(roomId, playerId);
   const hasResolvedPlayerInRoom = Boolean(resolvedPlayerId && room?.players[resolvedPlayerId]);
 
@@ -745,6 +759,7 @@ export default function Game() {
     matchEventStreamInitializedRef.current = false;
     lastSeenMatchEventSequenceRef.current = 0;
     lastObservedMatchStatusRef.current = null;
+    pauseAdvanceInFlightRef.current = null;
     setRoomActionType(null);
     setShowJoinNameGate(false);
     setJoinError(null);
@@ -1006,6 +1021,10 @@ export default function Game() {
 
   useEffect(() => {
     if (!room || !roomId || room.status !== GameStatus.PLAYING) return;
+    if (room.gameState.match.isPaused) {
+      if (botTimerRef.current) clearTimeout(botTimerRef.current);
+      return;
+    }
 
     const myCurrentId = resolvePlayerId(roomId, playerId);
     if (!myCurrentId || !room.players[myCurrentId]) return;
@@ -1138,6 +1157,7 @@ export default function Game() {
     matchEventStreamInitializedRef.current = false;
     lastSeenMatchEventSequenceRef.current = 0;
     lastObservedMatchStatusRef.current = null;
+    pauseAdvanceInFlightRef.current = null;
     setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
     setQueuedMatchEvents([]);
     setActiveMatchEvent(null);
@@ -1239,9 +1259,10 @@ export default function Game() {
     myId &&
     (currentTurn.battingPlayerId === myId || currentTurn.bowlingPlayerId === myId)
   );
-  const isMatchPopupActive = Boolean(activeMatchEvent);
+  const isGameplayPaused = Boolean(room?.gameState.match.isPaused);
+  const currentPauseEventId = room?.gameState.match.pauseUntilEventId ?? null;
   const hasManualTurnControl = Boolean(
-    isMyTurn && me?.isOnline && !me?.isBotControlled && !isMatchPopupActive
+    isMyTurn && me?.isOnline && !me?.isBotControlled && !isGameplayPaused
   );
   const iAmBatting = Boolean(currentTurn && myId && currentTurn.battingPlayerId === myId);
 
@@ -1379,6 +1400,7 @@ export default function Game() {
       matchEventStreamInitializedRef.current = false;
       lastSeenMatchEventSequenceRef.current = 0;
       lastObservedMatchStatusRef.current = null;
+      pauseAdvanceInFlightRef.current = null;
       setQueuedMatchEvents([]);
       setActiveMatchEvent(null);
       setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
@@ -1406,6 +1428,13 @@ export default function Game() {
       matchEventStreamInitializedRef.current = true;
       lastSeenMatchEventSequenceRef.current = latestSequence;
       lastObservedMatchStatusRef.current = currentStatus;
+
+      if (room.gameState.match.isPaused) {
+        setQueuedMatchEvents(
+          getQueuedPauseEvents(matchEvents, room.gameState.match.pauseUntilEventId)
+        );
+      }
+
       return;
     }
 
@@ -1433,20 +1462,39 @@ export default function Game() {
   useEffect(() => {
     if (room?.status === GameStatus.PLAYING || room?.status === GameStatus.FINISHED) return;
 
+    pauseAdvanceInFlightRef.current = null;
     setQueuedMatchEvents([]);
     setActiveMatchEvent(null);
     setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
   }, [room?.status]);
 
   useEffect(() => {
-    if (activeMatchEvent || queuedMatchEvents.length === 0) {
+    if (activeMatchEvent || !currentPauseEventId || queuedMatchEvents.length === 0) {
       return;
     }
 
-    const [nextEvent, ...remainingEvents] = queuedMatchEvents;
+    const nextEvent = queuedMatchEvents.find((event) => event.id === currentPauseEventId);
+    if (!nextEvent) {
+      return;
+    }
+
     setActiveMatchEvent(nextEvent);
-    setQueuedMatchEvents(remainingEvents);
-  }, [activeMatchEvent, queuedMatchEvents]);
+    setQueuedMatchEvents((currentQueue) =>
+      currentQueue.filter((event) => event.id !== nextEvent.id)
+    );
+  }, [activeMatchEvent, currentPauseEventId, queuedMatchEvents]);
+
+  useEffect(() => {
+    if (!activeMatchEvent) {
+      return;
+    }
+
+    if (currentPauseEventId && activeMatchEvent.id === currentPauseEventId) {
+      return;
+    }
+
+    setActiveMatchEvent(null);
+  }, [activeMatchEvent, currentPauseEventId]);
 
   useEffect(() => {
     setMatchPopupState(
@@ -1454,7 +1502,49 @@ export default function Game() {
     );
   }, [activeMatchEvent]);
 
+  const requestPauseAdvance = (eventId: string) => {
+    if (!roomId || pauseAdvanceInFlightRef.current === eventId) {
+      return;
+    }
+
+    pauseAdvanceInFlightRef.current = eventId;
+    void advanceMatchEventPause(roomId, eventId).finally(() => {
+      if (pauseAdvanceInFlightRef.current === eventId) {
+        pauseAdvanceInFlightRef.current = null;
+      }
+    });
+  };
+
+  useEffect(() => {
+    if (!roomId || !room?.gameState.match.isPaused || !currentPauseEventId) {
+      return;
+    }
+
+    const pausedAt = room.gameState.match.pausedAt;
+    if (!pausedAt) {
+      return;
+    }
+
+    const elapsed = Date.now() - pausedAt;
+    if (elapsed >= MATCH_EVENT_PAUSE_FAILSAFE_MS) {
+      requestPauseAdvance(currentPauseEventId);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      requestPauseAdvance(currentPauseEventId);
+    }, MATCH_EVENT_PAUSE_FAILSAFE_MS - elapsed);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [currentPauseEventId, room?.gameState.match.isPaused, room?.gameState.match.pausedAt, roomId]);
+
   const dismissMatchEvent = () => {
+    if (activeMatchEvent && isHost && currentPauseEventId === activeMatchEvent.id) {
+      requestPauseAdvance(activeMatchEvent.id);
+    }
+
     setActiveMatchEvent(null);
   };
 
@@ -1489,6 +1579,34 @@ export default function Game() {
       onDismiss={dismissMatchEvent}
     />
   );
+
+  const pauseShieldOverlay =
+    isGameplayPaused && !matchPopupState.isOpen ? (
+      <AnimatePresence>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[82] flex items-center justify-center bg-[#050816]/62 px-4 backdrop-blur-sm"
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: -8 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className="panel-shell w-full max-w-sm rounded-2xl border border-white/10 px-6 py-6 text-center"
+          >
+            <Badge tone="yellow" className="mx-auto">Match paused</Badge>
+            <div className="mt-4 text-2xl font-black text-copy-primary">
+              Syncing event
+            </div>
+            <div className="mt-2 text-sm font-semibold text-copy-secondary">
+              Gameplay will resume for everyone after this popup sequence completes.
+            </div>
+          </motion.div>
+        </motion.div>
+      </AnimatePresence>
+    ) : null;
 
   const joinNameGateOverlay =
     showJoinNameGate && roomId ? (
@@ -2130,7 +2248,7 @@ export default function Game() {
       <>
         <MainLayout
           actionLoading={actionLoading}
-          canKickPlayers={room.status === GameStatus.PLAYING}
+          canKickPlayers={room.status === GameStatus.PLAYING && !isGameplayPaused}
           copied={copied}
           isHost={isHost}
           mainClassName="mx-auto w-full max-w-[76rem] lg:pt-2"
@@ -2167,7 +2285,9 @@ export default function Game() {
             <div className="space-y-3.5 xl:space-y-4">
               <Card className="panel-section rounded-lg p-3.5 sm:p-4">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-2.5">
-                  {hasManualTurnControl ? (
+                  {isGameplayPaused ? (
+                    <Badge tone="yellow">Match paused</Badge>
+                  ) : hasManualTurnControl ? (
                     <Badge tone="zinc">
                       {iAmBatting ? 'You are batting' : 'You are bowling'}
                     </Badge>
@@ -2186,6 +2306,15 @@ export default function Game() {
                         exit={{ opacity: 0 }}
                       >
                         <Badge tone="green">Locked in</Badge>
+                      </motion.div>
+                    ) : isGameplayPaused ? (
+                      <motion.div
+                        key="paused"
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0 }}
+                      >
+                        <Badge tone="yellow">Waiting for event sync</Badge>
                       </motion.div>
                     ) : hasManualTurnControl ? (
                       <motion.div
@@ -2289,6 +2418,7 @@ export default function Game() {
             </div>
           </motion.div>
         </MainLayout>
+        {pauseShieldOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
         {kickPlayerDialogOverlay}
@@ -2299,6 +2429,7 @@ export default function Game() {
 
   if (room.status === GameStatus.FINISHED) {
     const shouldHoldFinishedSummary =
+      isGameplayPaused ||
       activeMatchEvent?.type === 'match_result' ||
       queuedMatchEvents.some((event) => event.type === 'match_result');
 
@@ -2341,6 +2472,7 @@ export default function Game() {
             />
           </MainLayout>
         )}
+        {pauseShieldOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
         {kickPlayerDialogOverlay}

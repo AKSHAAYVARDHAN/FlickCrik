@@ -79,6 +79,15 @@ export interface MatchEvent {
   createdAt: number;
 }
 
+export type MatchPauseReason = 'EVENT';
+
+export interface MatchFlowState {
+  isPaused: boolean;
+  pauseReason: MatchPauseReason | null;
+  pauseUntilEventId: string | null;
+  pausedAt: number | null;
+}
+
 export interface TeamData {
   score: number;
   wickets: number; // remaining wickets (starts = number of players in team)
@@ -144,6 +153,7 @@ export interface GameState {
   latestEvent: MatchEvent | null;
   matchEvents: MatchEvent[];
   eventSequence: number;
+  match: MatchFlowState;
   teamSummary: Record<TeamId, TeamSummary>;
   playerStats: Record<string, PlayerMatchStats>;
   mvp: MatchMVP | null;
