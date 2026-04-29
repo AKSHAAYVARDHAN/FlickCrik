@@ -1,14 +1,13 @@
 import { useEffect, useEffectEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { BellRing, CircleDot, ShieldAlert, UserPlus, X } from 'lucide-react';
+import { BellRing, CircleDot, ShieldAlert, Trophy, Zap, X } from 'lucide-react';
 import { MatchEvent } from '../types';
+import { MATCH_EVENT_AUTO_DISMISS_MS } from '../gameLogic/matchEvents';
 import { Badge } from './UI';
-
-const MATCH_EVENT_AUTO_DISMISS_MS = 4000;
 
 export interface MatchPopupState {
   isOpen: boolean;
-  type: 'wicket' | 'run' | 'over';
+  type: 'wicket' | 'over' | 'innings' | 'result';
   message: string;
   event: MatchEvent | null;
 }
@@ -27,12 +26,19 @@ function eventTone(type: MatchPopupState['type']) {
         panel: 'bg-[rgba(90,18,32,0.88)]',
         icon: ShieldAlert,
       };
-    case 'run':
+    case 'innings':
+      return {
+        badge: 'yellow' as const,
+        border: 'border-brand-yellow/35',
+        panel: 'bg-[rgba(63,47,10,0.9)]',
+        icon: Zap,
+      };
+    case 'result':
       return {
         badge: 'green' as const,
         border: 'border-brand-green/35',
-        panel: 'bg-[rgba(15,56,39,0.88)]',
-        icon: UserPlus,
+        panel: 'bg-[rgba(15,56,39,0.9)]',
+        icon: Trophy,
       };
     default:
       return {
@@ -48,10 +54,12 @@ function badgeLabel(type: MatchPopupState['type']) {
   switch (type) {
     case 'wicket':
       return 'Wicket';
+    case 'innings':
+      return 'Innings update';
+    case 'result':
+      return 'Match result';
     case 'over':
       return 'Over update';
-    default:
-      return 'Match event';
   }
 }
 

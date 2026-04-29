@@ -23,13 +23,14 @@ import {
 } from '../types';
 import { processTurn } from '../gameLogic/engine';
 import { isSelectionValue, MAX_SELECTION, MIN_SELECTION, normalizeBallResult } from '../gameLogic/ballRules';
+import { pushMatchEvent } from '../gameLogic/matchEvents';
 import {
   buildEmptyPlayerStatsMap,
   buildMatchSummary,
   createEmptyTeamSummary,
   SUMMARY_VISIBILITY_DELAY_MS,
 } from '../gameLogic/matchSummary';
-import { DEFAULT_TEAM_NAMES, sanitizeTeamName } from '../utils/teamNames';
+import { DEFAULT_TEAM_NAMES, getTeamName, sanitizeTeamName } from '../utils/teamNames';
 
 const ROOMS_COLLECTION = 'rooms';
 const MAX_PLAYERS = 12;
@@ -518,7 +519,7 @@ function makePlayingGameState(room: Room, battingTeam: TeamId, decision: TossDec
   const battingQueue = battingTeam === 'A' ? queueA : queueB;
   const bowlingQueue = bowlingTeam === 'A' ? queueA : queueB;
 
-  return {
+  const nextGameState: GameState = {
     ...makeDefaultGameState(),
     status: GameStatus.PLAYING,
     battingTeam,
@@ -547,6 +548,24 @@ function makePlayingGameState(room: Room, battingTeam: TeamId, decision: TossDec
     },
     playerStats: buildEmptyPlayerStatsMap(players),
   };
+
+  const battingTeamName = getTeamName(room, battingTeam);
+  const openingBowlerName = players[nextGameState.currentBowlerId ?? '']?.name ?? null;
+
+  pushMatchEvent(nextGameState, {
+    type: 'innings_start',
+    innings: 1,
+    overNumber: 1,
+    ballInOver: 0,
+    title: 'First Innings Start',
+    subtitle: `${battingTeamName} bat first`,
+    detail: openingBowlerName ? `${openingBowlerName} opens the bowling` : undefined,
+    batterId: nextGameState.currentBatterId,
+    bowlerId: nextGameState.currentBowlerId,
+    nextPlayerId: nextGameState.currentBatterId,
+  });
+
+  return nextGameState;
 }
 
 function cloneQueue(queue: GameState['playersQueue']): GameState['playersQueue'] {

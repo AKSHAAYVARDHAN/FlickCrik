@@ -56,7 +56,12 @@ export interface TurnQueue {
   B: string[]; // ordered playerIds for team B
 }
 
-export type MatchEventType = 'wicket' | 'next_batter' | 'over_complete';
+export type MatchEventType =
+  | 'wicket'
+  | 'next_batter'
+  | 'over_complete'
+  | 'innings_start'
+  | 'match_result';
 
 export interface MatchEvent {
   id: string;

@@ -23,7 +23,6 @@ import {
   MatchupBanner,
   TeamScoreboard,
 } from '../components/GameComponents';
-import InningsAnnouncement, { type AnnouncementData } from '../components/InningsAnnouncement';
 import MatchSummary from '../components/MatchSummary';
 import MatchEventPopup, { type MatchPopupState } from '../components/MatchEventPopup';
 import MainLayout from '../components/layout/MainLayout';
@@ -75,10 +74,8 @@ import {
 } from '../utils/playerIdentity';
 import { getTeamName, sanitizeTeamName } from '../utils/teamNames';
 
-const INNINGS_ANNOUNCEMENT_STORAGE_PREFIX = 'handcrik_seen_innings_';
 const TOSS_REVEAL_DURATION_MS = 1150;
 const TOSS_RESULT_POPUP_DURATION_MS = 2500;
-const MATCH_RESULT_POPUP_DURATION_MS = 2500;
 const AI_TOSS_DECISION_DELAY_MS = 900;
 const JOIN_REMOVAL_GRACE_MS = 5000;
 type GameView = 'game' | 'summary' | 'lobby';
@@ -91,43 +88,6 @@ function isTossFlowStatus(status: GameStatus | null | undefined): boolean {
     status === GameStatus.TOSS_RESULT ||
     status === GameStatus.DECISION
   );
-}
-
-function getAnnouncementPhase(room: Room): AnnouncementData['phase'] {
-  return room.gameState.currentInnings === 1 ? 'first' : 'second';
-}
-
-function readSeenInningsPhases(roomId: string): AnnouncementData['phase'][] {
-  try {
-    const raw = sessionStorage.getItem(`${INNINGS_ANNOUNCEMENT_STORAGE_PREFIX}${roomId}`);
-    if (!raw) return [];
-
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function markInningsPhaseSeen(roomId: string, phase: AnnouncementData['phase']) {
-  const seen = new Set(readSeenInningsPhases(roomId));
-  seen.add(phase);
-  sessionStorage.setItem(
-    `${INNINGS_ANNOUNCEMENT_STORAGE_PREFIX}${roomId}`,
-    JSON.stringify(Array.from(seen))
-  );
-}
-
-function clearSeenInningsPhases(roomId: string) {
-  sessionStorage.removeItem(`${INNINGS_ANNOUNCEMENT_STORAGE_PREFIX}${roomId}`);
-}
-
-function createAnnouncementData(room: Room, me: Player): AnnouncementData {
-  return {
-    phase: getAnnouncementPhase(room),
-    role: room.gameState.battingTeam === me.team ? 'batting' : 'bowling',
-    target: room.gameState.target ?? undefined,
-  };
 }
 
 function formatCaptainName(player: Player | null): string {
@@ -228,23 +188,9 @@ function teamClasses(team: TeamId) {
       };
 }
 
-function matchResultPopupMessage(room: Room): string {
-  const winner = room.gameState.winner;
-
-  if (winner === 'TIE') {
-    return 'Match tied';
-  }
-
-  if (winner) {
-    return `Match won by ${getTeamName(room, winner)}`;
-  }
-
-  return 'Match complete';
-}
-
 const EMPTY_MATCH_POPUP_STATE: MatchPopupState = {
   isOpen: false,
-  type: 'run',
+  type: 'over',
   message: '',
   event: null,
 };
@@ -253,10 +199,14 @@ function getMatchPopupType(event: MatchEvent): MatchPopupState['type'] {
   switch (event.type) {
     case 'wicket':
       return 'wicket';
+    case 'innings_start':
+      return 'innings';
+    case 'match_result':
+      return 'result';
     case 'over_complete':
       return 'over';
     default:
-      return 'run';
+      return 'over';
   }
 }
 
@@ -269,27 +219,13 @@ function createMatchPopupState(event: MatchEvent): MatchPopupState {
   };
 }
 
-function selectMatchPopupEvent(events: MatchEvent[]): MatchEvent {
-  const eventPriority: Record<MatchEvent['type'], number> = {
-    wicket: 3,
-    over_complete: 2,
-    next_batter: 1,
-  };
-
-  return events.reduce((selectedEvent, currentEvent) => {
-    const selectedPriority = eventPriority[selectedEvent.type];
-    const currentPriority = eventPriority[currentEvent.type];
-
-    if (currentPriority > selectedPriority) {
-      return currentEvent;
-    }
-
-    if (currentPriority === selectedPriority && currentEvent.sequence > selectedEvent.sequence) {
-      return currentEvent;
-    }
-
-    return selectedEvent;
-  });
+function isPopupMatchEvent(event: MatchEvent): boolean {
+  return (
+    event.type === 'wicket' ||
+    event.type === 'over_complete' ||
+    event.type === 'innings_start' ||
+    event.type === 'match_result'
+  );
 }
 
 interface TeamLobbyCardProps {
@@ -768,10 +704,9 @@ export default function Game() {
   const [showReplayReadyBanner, setShowReplayReadyBanner] = useState(false);
   const [isCoinFlipping, setIsCoinFlipping] = useState(false);
   const [revealedTossResult, setRevealedTossResult] = useState<TossChoice | null>(null);
-  const [showAnnouncement, setShowAnnouncement] = useState(false);
-  const [announcementData, setAnnouncementData] = useState<AnnouncementData | null>(null);
+  const [queuedMatchEvents, setQueuedMatchEvents] = useState<MatchEvent[]>([]);
+  const [activeMatchEvent, setActiveMatchEvent] = useState<MatchEvent | null>(null);
   const [matchPopupState, setMatchPopupState] = useState<MatchPopupState>(EMPTY_MATCH_POPUP_STATE);
-  const [showMatchResultPopup, setShowMatchResultPopup] = useState(false);
   const [roomActionType, setRoomActionType] = useState<RoomActionType | null>(null);
   const [kickTarget, setKickTarget] = useState<Player | null>(null);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -779,11 +714,10 @@ export default function Game() {
   const automatedTossChoiceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const matchResultPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAnimatedTossResultRef = useRef<TossChoice | null>(null);
-  const lastAnnouncementKeyRef = useRef<string | null>(null);
-  const eventStreamInitializedRef = useRef(false);
+  const matchEventStreamInitializedRef = useRef(false);
   const lastSeenMatchEventSequenceRef = useRef(0);
+  const lastObservedMatchStatusRef = useRef<GameStatus | null>(null);
   const joinInFlightRef = useRef(false);
   const joinGateInitializedRef = useRef(false);
   const pendingJoinPlayerIdRef = useRef<string | null>(null);
@@ -803,18 +737,23 @@ export default function Game() {
     }
     clearRoomPlayerId(targetRoomId);
     clearPendingJoinStorageKey(targetRoomId);
-    clearSeenInningsPhases(targetRoomId);
     joinInFlightRef.current = false;
     joinGateInitializedRef.current = false;
     pendingJoinPlayerIdRef.current = null;
     joinGraceUntilRef.current = null;
     hasBeenRoomMemberRef.current = false;
+    matchEventStreamInitializedRef.current = false;
+    lastSeenMatchEventSequenceRef.current = 0;
+    lastObservedMatchStatusRef.current = null;
     setRoomActionType(null);
     setShowJoinNameGate(false);
     setJoinError(null);
     setJoining(false);
     setActionLoading(false);
     setReturningToLobby(false);
+    setQueuedMatchEvents([]);
+    setActiveMatchEvent(null);
+    setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
     setRoomLookupState('loading');
     setPlayerId(null);
     setRoom(null);
@@ -1196,13 +1135,14 @@ export default function Game() {
     setReturningToLobby(false);
     setShowReplayReadyBanner(false);
     previousRoomStatusRef.current = null;
-    eventStreamInitializedRef.current = false;
+    matchEventStreamInitializedRef.current = false;
     lastSeenMatchEventSequenceRef.current = 0;
+    lastObservedMatchStatusRef.current = null;
     setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
-    setShowMatchResultPopup(false);
+    setQueuedMatchEvents([]);
+    setActiveMatchEvent(null);
     setRoomActionType(null);
     setKickTarget(null);
-    if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
   }, [roomId]);
 
   useEffect(() => {
@@ -1299,7 +1239,10 @@ export default function Game() {
     myId &&
     (currentTurn.battingPlayerId === myId || currentTurn.bowlingPlayerId === myId)
   );
-  const hasManualTurnControl = Boolean(isMyTurn && me?.isOnline && !me?.isBotControlled);
+  const isMatchPopupActive = Boolean(activeMatchEvent);
+  const hasManualTurnControl = Boolean(
+    isMyTurn && me?.isOnline && !me?.isBotControlled && !isMatchPopupActive
+  );
   const iAmBatting = Boolean(currentTurn && myId && currentTurn.battingPlayerId === myId);
 
   useEffect(() => {
@@ -1433,111 +1376,86 @@ export default function Game() {
     if (!roomId || !room) return;
 
     if (room.status === GameStatus.LOBBY) {
-      clearSeenInningsPhases(roomId);
-      lastAnnouncementKeyRef.current = null;
-      setShowAnnouncement(false);
-      setAnnouncementData(null);
-      eventStreamInitializedRef.current = false;
+      matchEventStreamInitializedRef.current = false;
       lastSeenMatchEventSequenceRef.current = 0;
+      lastObservedMatchStatusRef.current = null;
+      setQueuedMatchEvents([]);
+      setActiveMatchEvent(null);
       setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
       return;
     }
-
-    if (room.status !== GameStatus.PLAYING || !me) return;
-
-    const phase = getAnnouncementPhase(room);
-    const announcementKey = `${roomId}:${phase}`;
-
-    if (lastAnnouncementKeyRef.current === announcementKey) {
-      return;
-    }
-
-    lastAnnouncementKeyRef.current = announcementKey;
-
-    if (readSeenInningsPhases(roomId).includes(phase)) {
-      return;
-    }
-
-    setAnnouncementData(createAnnouncementData(room, me));
-    setShowAnnouncement(true);
-    markInningsPhaseSeen(roomId, phase);
-  }, [me, room, roomId]);
+  }, [room, roomId]);
 
   useEffect(() => {
-    if (!room || room.status !== GameStatus.PLAYING) return;
+    if (!room) return;
+
+    const currentStatus = room.status;
+    const previousStatus = lastObservedMatchStatusRef.current;
+    const isLiveMatchStatus =
+      currentStatus === GameStatus.PLAYING || currentStatus === GameStatus.FINISHED;
+
+    if (!isLiveMatchStatus) {
+      lastObservedMatchStatusRef.current = currentStatus;
+      return;
+    }
 
     const latestSequence = room.gameState.eventSequence ?? 0;
     const matchEvents = room.gameState.matchEvents ?? [];
 
-    if (!eventStreamInitializedRef.current) {
-      eventStreamInitializedRef.current = true;
+    if (!matchEventStreamInitializedRef.current && previousStatus === null) {
+      matchEventStreamInitializedRef.current = true;
       lastSeenMatchEventSequenceRef.current = latestSequence;
+      lastObservedMatchStatusRef.current = currentStatus;
       return;
     }
+
+    matchEventStreamInitializedRef.current = true;
 
     if (latestSequence <= lastSeenMatchEventSequenceRef.current) {
+      lastObservedMatchStatusRef.current = currentStatus;
       return;
     }
 
-    const unseenEvents = matchEvents.filter(
-      (event) => event.sequence > lastSeenMatchEventSequenceRef.current
-    );
+    const unseenEvents = matchEvents
+      .filter((event) => event.sequence > lastSeenMatchEventSequenceRef.current)
+      .filter(isPopupMatchEvent);
+
+    lastSeenMatchEventSequenceRef.current = latestSequence;
+    lastObservedMatchStatusRef.current = currentStatus;
 
     if (unseenEvents.length === 0) {
-      lastSeenMatchEventSequenceRef.current = latestSequence;
       return;
     }
 
-    lastSeenMatchEventSequenceRef.current = unseenEvents[unseenEvents.length - 1].sequence;
-    setMatchPopupState(createMatchPopupState(selectMatchPopupEvent(unseenEvents)));
+    setQueuedMatchEvents((currentQueue) => [...currentQueue, ...unseenEvents]);
   }, [room]);
 
   useEffect(() => {
-    if (room?.status === GameStatus.PLAYING) return;
+    if (room?.status === GameStatus.PLAYING || room?.status === GameStatus.FINISHED) return;
 
-    setMatchPopupState((currentPopupState) =>
-      currentPopupState.isOpen ? EMPTY_MATCH_POPUP_STATE : currentPopupState
-    );
+    setQueuedMatchEvents([]);
+    setActiveMatchEvent(null);
+    setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
   }, [room?.status]);
 
   useEffect(() => {
-    if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
-
-    if (!room || room.status !== GameStatus.FINISHED) {
-      setShowMatchResultPopup(false);
+    if (activeMatchEvent || queuedMatchEvents.length === 0) {
       return;
     }
 
-    const finishedAt = room.gameState.finishedAt;
-    if (!finishedAt) {
-      setShowMatchResultPopup(false);
-      return;
-    }
+    const [nextEvent, ...remainingEvents] = queuedMatchEvents;
+    setActiveMatchEvent(nextEvent);
+    setQueuedMatchEvents(remainingEvents);
+  }, [activeMatchEvent, queuedMatchEvents]);
 
-    const elapsedSinceFinish = Math.max(0, Date.now() - finishedAt);
-
-    if (elapsedSinceFinish >= MATCH_RESULT_POPUP_DURATION_MS) {
-      setShowMatchResultPopup(false);
-      return;
-    }
-
-    setShowMatchResultPopup(true);
-
-    matchResultPopupTimerRef.current = setTimeout(() => {
-      setShowMatchResultPopup(false);
-    }, MATCH_RESULT_POPUP_DURATION_MS - elapsedSinceFinish);
-
-    return () => {
-      if (matchResultPopupTimerRef.current) clearTimeout(matchResultPopupTimerRef.current);
-    };
-  }, [room?.gameState.finishedAt, room?.status]);
-
-  const dismissAnnouncement = () => {
-    setShowAnnouncement(false);
-  };
+  useEffect(() => {
+    setMatchPopupState(
+      activeMatchEvent ? createMatchPopupState(activeMatchEvent) : EMPTY_MATCH_POPUP_STATE
+    );
+  }, [activeMatchEvent]);
 
   const dismissMatchEvent = () => {
-    setMatchPopupState(EMPTY_MATCH_POPUP_STATE);
+    setActiveMatchEvent(null);
   };
 
   const handleCreateRoomFromExpired = async () => {
@@ -1564,14 +1482,6 @@ export default function Game() {
       setActionLoading(false);
     }
   };
-
-  const announcementOverlay = (
-    <InningsAnnouncement
-      open={showAnnouncement}
-      data={announcementData}
-      onDismiss={dismissAnnouncement}
-    />
-  );
 
   const matchEventOverlay = (
     <MatchEventPopup
@@ -1624,7 +1534,6 @@ export default function Game() {
             <div className="text-sm font-bold text-copy-secondary">Loading room</div>
           </Card>
         </Layout>
-        {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
       </>
@@ -1658,7 +1567,6 @@ export default function Game() {
         : 'Opponent Team won the toss'
       : `${getTeamName(room, toss.winnerTeam)} won the toss`
     : 'Toss complete';
-  const matchWinnerPopupMessage = room ? matchResultPopupMessage(room) : 'Match complete';
 
   const copyLink = () => {
     navigator.clipboard.writeText(window.location.href);
@@ -2010,7 +1918,6 @@ export default function Game() {
             )}
           </div>
         </MainLayout>
-        {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
         {kickPlayerDialogOverlay}
@@ -2206,7 +2113,6 @@ export default function Game() {
             </motion.div>
           ) : null}
         </AnimatePresence>
-        {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
         {kickPlayerDialogOverlay}
@@ -2383,7 +2289,6 @@ export default function Game() {
             </div>
           </motion.div>
         </MainLayout>
-        {announcementOverlay}
         {matchEventOverlay}
         {joinNameGateOverlay}
         {kickPlayerDialogOverlay}
@@ -2393,33 +2298,24 @@ export default function Game() {
   }
 
   if (room.status === GameStatus.FINISHED) {
+    const shouldHoldFinishedSummary =
+      activeMatchEvent?.type === 'match_result' ||
+      queuedMatchEvents.some((event) => event.type === 'match_result');
+
     return (
       <>
-        {showMatchResultPopup ? (
-          <AnimatePresence>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[90] flex items-center justify-center bg-[#050816]/72 px-4 backdrop-blur-[3px]"
-            >
-              <motion.div
-                initial={{ opacity: 0, scale: 0.9, y: 14 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.98, y: -10 }}
-                transition={{ duration: 0.28, ease: 'easeOut' }}
-                className="panel-shell w-full max-w-md rounded-2xl border border-brand-yellow/30 px-6 py-7 text-center shadow-[0_28px_80px_rgba(0,0,0,0.35)]"
-              >
-                <Badge tone="yellow" className="mx-auto" icon={Trophy}>Match result</Badge>
-                <div className="mt-4 text-2xl font-black text-copy-primary sm:text-3xl">
-                  {matchWinnerPopupMessage}
-                </div>
-                <div className="mt-2 text-sm font-semibold text-copy-secondary">
-                  Match Summary coming up next
-                </div>
-              </motion.div>
-            </motion.div>
-          </AnimatePresence>
+        {shouldHoldFinishedSummary ? (
+          <Layout className="items-center">
+            <Card className="panel-shell mx-auto flex w-full max-w-md flex-col items-center justify-center rounded-2xl p-8 text-center">
+              <Badge tone="yellow" className="mx-auto" icon={Trophy}>Match complete</Badge>
+              <div className="mt-4 text-2xl font-black text-copy-primary">
+                Final moments
+              </div>
+              <div className="mt-2 text-sm font-semibold text-copy-secondary">
+                Showing the last match events before the summary.
+              </div>
+            </Card>
+          </Layout>
         ) : (
           <MainLayout
             actionLoading={actionLoading}
@@ -2445,6 +2341,7 @@ export default function Game() {
             />
           </MainLayout>
         )}
+        {matchEventOverlay}
         {joinNameGateOverlay}
         {kickPlayerDialogOverlay}
         {roomActionDialogOverlay}

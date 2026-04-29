@@ -2,7 +2,6 @@ import {
   BallResult,
   GameState,
   GameStatus,
-  MatchEvent,
   Player,
   Room,
   TeamId,
@@ -14,7 +13,9 @@ import {
   normalizeBallResult,
   SELECTION_OPTIONS,
 } from './ballRules';
+import { pushMatchEvent } from './matchEvents';
 import { buildMatchSummary } from './matchSummary';
+import { getTeamName } from '../utils/teamNames';
 
 function biasedRandom(): number {
   return Math.floor(Math.random() * (MAX_SELECTION + 1));
@@ -139,25 +140,8 @@ function syncCurrentTurn(gameState: GameState) {
   };
 }
 
-function pushEvent(
-  gameState: GameState,
-  event: Omit<MatchEvent, 'id' | 'sequence' | 'createdAt'>
-) {
-  const nextSequence = (gameState.eventSequence ?? 0) + 1;
-  const nextEvent: MatchEvent = {
-    ...event,
-    id: `event_${nextSequence}`,
-    sequence: nextSequence,
-    createdAt: Date.now(),
-  };
-
-  const history = [...(gameState.matchEvents ?? []), nextEvent].slice(-12);
-  gameState.eventSequence = nextSequence;
-  gameState.latestEvent = nextEvent;
-  gameState.matchEvents = history;
-}
-
 function startNextInnings(
+  room: Room,
   gameState: GameState,
   players: Record<string, Player>,
   nextBattingTeam: TeamId
@@ -178,6 +162,26 @@ function startNextInnings(
   gameState.currentBatterId = openingBatterId;
   gameState.currentBowlerId = openingBowlerId;
   syncCurrentTurn(gameState);
+
+  const battingTeamName = getTeamName(room, nextBattingTeam);
+  const openingBowlerName =
+    openingBowlerId && players[openingBowlerId] ? players[openingBowlerId].name : null;
+
+  pushMatchEvent(gameState, {
+    type: 'innings_start',
+    innings: gameState.currentInnings,
+    overNumber: gameState.overNumber,
+    ballInOver: 0,
+    title: 'Second Innings Start',
+    subtitle:
+      typeof gameState.target === 'number'
+        ? `${battingTeamName} need ${gameState.target} to win`
+        : `${battingTeamName} begin the chase`,
+    detail: openingBowlerName ? `${openingBowlerName} opens the bowling` : undefined,
+    batterId: openingBatterId,
+    bowlerId: openingBowlerId,
+    nextPlayerId: openingBatterId,
+  });
 }
 
 export const processTurn = (room: Room): Partial<Room> | null => {
@@ -244,7 +248,7 @@ export const processTurn = (room: Room): Partial<Room> | null => {
     nextPlayers[currentBatterId].isOut = true;
     nextGameState.teamWickets[battingTeam] -= 1;
 
-    pushEvent(nextGameState, {
+    pushMatchEvent(nextGameState, {
       type: 'wicket',
       innings: nextGameState.currentInnings,
       overNumber,
@@ -268,7 +272,7 @@ export const processTurn = (room: Room): Partial<Room> | null => {
 
     if (!inningsOver && nextBatterId) {
       nextGameState.currentBatterId = nextBatterId;
-      pushEvent(nextGameState, {
+      pushMatchEvent(nextGameState, {
         type: 'next_batter',
         innings: nextGameState.currentInnings,
         overNumber,
@@ -289,7 +293,7 @@ export const processTurn = (room: Room): Partial<Room> | null => {
         for (const playerId of getQueue(nextGameState, nextBattingTeam)) {
           if (nextPlayers[playerId]) nextPlayers[playerId].isOut = false;
         }
-        startNextInnings(nextGameState, nextPlayers, nextBattingTeam);
+        startNextInnings(room, nextGameState, nextPlayers, nextBattingTeam);
       } else {
         nextStatus = GameStatus.FINISHED;
         nextGameState.status = GameStatus.FINISHED;
@@ -303,6 +307,27 @@ export const processTurn = (room: Room): Partial<Room> | null => {
         nextGameState.currentBatterId = null;
         nextGameState.currentBowlerId = null;
         syncCurrentTurn(nextGameState);
+
+        pushMatchEvent(nextGameState, {
+          type: 'match_result',
+          innings: nextGameState.currentInnings,
+          overNumber,
+          ballInOver,
+          title: 'Match Result',
+          subtitle:
+            summary.winner === 'TIE'
+              ? 'The match is tied'
+              : summary.winner
+                ? `${getTeamName(room, summary.winner)} win the match`
+                : 'Match complete',
+          detail:
+            summary.winner === 'TIE'
+              ? undefined
+              : `${getTeamName(room, battingTeam)} finish on ${nextGameState.teamScores[battingTeam]}`,
+          batterId: currentBatterId,
+          bowlerId: currentBowlerId,
+          nextPlayerId: null,
+        });
       }
     }
   } else {
@@ -329,6 +354,24 @@ export const processTurn = (room: Room): Partial<Room> | null => {
       nextGameState.currentBatterId = null;
       nextGameState.currentBowlerId = null;
       syncCurrentTurn(nextGameState);
+
+      pushMatchEvent(nextGameState, {
+        type: 'match_result',
+        innings: nextGameState.currentInnings,
+        overNumber,
+        ballInOver,
+        title: 'Match Result',
+        subtitle:
+          summary.winner === 'TIE'
+            ? 'The match is tied'
+            : summary.winner
+              ? `${getTeamName(room, summary.winner)} win the match`
+              : 'Match complete',
+        detail: `${getTeamName(room, battingTeam)} chased down ${nextGameState.target}`,
+        batterId: currentBatterId,
+        bowlerId: currentBowlerId,
+        nextPlayerId: null,
+      });
     }
   }
 
@@ -351,7 +394,7 @@ export const processTurn = (room: Room): Partial<Room> | null => {
     nextGameState.currentBowlerId = nextBowlerId;
 
     if (nextBowlerId) {
-      pushEvent(nextGameState, {
+      pushMatchEvent(nextGameState, {
         type: 'over_complete',
         innings: nextGameState.currentInnings,
         overNumber,
