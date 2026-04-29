@@ -59,6 +59,22 @@ function getPlayerLabel(player: Player) {
   return player.isBot ? 'AI Bot' : player.name;
 }
 
+function renderRosterStatusBadge(player: Player, isLobby: boolean) {
+  if (player.isBot) {
+    return <Badge tone="yellow" icon={Bot}>AI</Badge>;
+  }
+
+  if (!isLobby && player.isOut) {
+    return <Badge tone="red">Out</Badge>;
+  }
+
+  if (player.isBotControlled) {
+    return <Badge tone="yellow" icon={Bot}>Bot Playing</Badge>;
+  }
+
+  return <Badge tone="green">{isLobby ? 'Ready' : 'In'}</Badge>;
+}
+
 export default function LeftSidebar({
   actionLoading = false,
   canKickPlayers = false,
@@ -223,17 +239,8 @@ export default function LeftSidebar({
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {isCurrentPlayer ? <Badge tone="zinc">You</Badge> : null}
-                      {!player.isBot && !player.isOnline ? (
-                        <Badge tone="red">Offline</Badge>
-                      ) : isLobby ? (
-                        <Badge tone={player.isBot ? 'yellow' : 'green'}>
-                          {player.isBot ? 'AI' : 'Ready'}
-                        </Badge>
-                      ) : player.isOut ? (
-                        <Badge tone="red">Out</Badge>
-                      ) : (
-                        <Badge tone="green">In</Badge>
-                      )}
+                      {!player.isBot && !player.isOnline ? <Badge tone="red">Offline</Badge> : null}
+                      {renderRosterStatusBadge(player, isLobby)}
                     </div>
                   </div>
                 </div>

@@ -25,6 +25,7 @@ export interface Player {
   isCaptain: boolean;
   isBot: boolean;
   isOnline: boolean;
+  isBotControlled: boolean;
   lastSeen: number;
   score: number;       // individual runs scored (batting)
   isOut: boolean;

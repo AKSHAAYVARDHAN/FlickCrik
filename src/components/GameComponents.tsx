@@ -173,6 +173,22 @@ function PlayerAvatar({ player, active, tone }: { player: Player; active: boolea
   );
 }
 
+function PlayerPresenceBadge({ player, live }: { player: Player; live: boolean }) {
+  if (player.isBot) {
+    return <Badge className="mt-1.5" tone="yellow" icon={Bot}>AI</Badge>;
+  }
+
+  if (player.isBotControlled) {
+    return <Badge className="mt-1.5" tone="yellow" icon={Bot}>Bot Playing</Badge>;
+  }
+
+  if (!player.isOnline) {
+    return <Badge className="mt-1.5" tone="red">Offline</Badge>;
+  }
+
+  return live ? <Badge className="mt-1.5" tone="green" icon={Zap}>Live</Badge> : null;
+}
+
 export function MatchupBanner({ batter, bowler, myId }: MatchupBannerProps) {
   if (!batter || !bowler) return null;
 
@@ -198,7 +214,7 @@ export function MatchupBanner({ batter, bowler, myId }: MatchupBannerProps) {
               {isBatterMe ? 'You' : batter.name}
             </div>
             <div className="mt-0.5 text-xs font-semibold text-copy-secondary">Batting</div>
-            {isBatterMe ? <Badge className="mt-1.5" tone="green" icon={Zap}>Live</Badge> : null}
+            <PlayerPresenceBadge player={batter} live={isBatterMe} />
           </div>
 
           <div className="flex flex-col items-center gap-2 px-1">
@@ -212,7 +228,7 @@ export function MatchupBanner({ batter, bowler, myId }: MatchupBannerProps) {
               {isBowlerMe ? 'You' : bowler.name}
             </div>
             <div className="mt-0.5 text-xs font-semibold text-copy-secondary">Bowling</div>
-            {isBowlerMe ? <Badge className="mt-1.5" tone="green" icon={Zap}>Live</Badge> : null}
+            <PlayerPresenceBadge player={bowler} live={isBowlerMe} />
           </div>
         </div>
       </Card>

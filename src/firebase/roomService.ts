@@ -33,9 +33,8 @@ import { DEFAULT_TEAM_NAMES, sanitizeTeamName } from '../utils/teamNames';
 
 const ROOMS_COLLECTION = 'rooms';
 const MAX_PLAYERS = 12;
-export const PLAYER_HEARTBEAT_INTERVAL_MS = 4000;
-export const PLAYER_OFFLINE_THRESHOLD_MS = 10000;
-export const PLAYER_STALE_THRESHOLD_MS = 25000;
+export const PLAYER_HEARTBEAT_INTERVAL_MS = 3000;
+export const PLAYER_OFFLINE_THRESHOLD_MS = 30000;
 
 function handleFirestoreError(error: any, operationType: any, path: string | null): never {
   const errInfo: FirestoreErrorInfo = {
@@ -171,10 +170,12 @@ function normalizePresence(player: Player, now: number): Player {
       ? now
       : 0;
   const isOnline = player.isBot ? true : now - lastSeen <= PLAYER_OFFLINE_THRESHOLD_MS;
+  const isBotControlled = player.isBot ? false : !isOnline;
 
   return {
     ...player,
     isOnline,
+    isBotControlled,
     lastSeen,
   };
 }
@@ -576,10 +577,6 @@ function humanPlayers(players: Record<string, Player>): Player[] {
   return Object.values(players).filter((player) => !player.isBot);
 }
 
-function shouldRemoveStalePlayer(player: Player, now: number): boolean {
-  return !player.isBot && now - player.lastSeen > PLAYER_STALE_THRESHOLD_MS;
-}
-
 function normalizePresenceMap(players: Record<string, Player>, now: number): Record<string, Player> {
   return normalizeCaptains(
     Object.fromEntries(
@@ -938,22 +935,12 @@ function buildPresenceLifecycleUpdate(room: Room, now = currentTimestamp()): Par
     return buildExpiredRoomUpdate();
   }
 
-  const stalePlayerIds = Object.values(nextPlayers)
-    .filter((player) => shouldRemoveStalePlayer(player, now))
-    .map((player) => player.id);
-
-  if (stalePlayerIds.length > 0) {
-    return buildRoomAfterBatchPlayerRemoval(
-      applyRoomUpdateLocally(room, { players: nextPlayers }),
-      stalePlayerIds
-    );
-  }
-
   const presenceChanged = Object.values(nextPlayers).some((player) => {
     const existingPlayer = room.players[player.id];
     return (
       !existingPlayer ||
       existingPlayer.isOnline !== player.isOnline ||
+      existingPlayer.isBotControlled !== player.isBotControlled ||
       existingPlayer.lastSeen !== player.lastSeen
     );
   });
@@ -1055,6 +1042,7 @@ export const heartbeatPlayerPresence = async (roomId: string, playerId: string):
         [playerId]: {
           ...player,
           isOnline: true,
+          isBotControlled: false,
           lastSeen: now,
         },
       };
@@ -1071,26 +1059,9 @@ export const heartbeatPlayerPresence = async (roomId: string, playerId: string):
 
       transaction.update(roomRef, {
         [`players.${playerId}.isOnline`]: true,
+        [`players.${playerId}.isBotControlled`]: false,
         [`players.${playerId}.lastSeen`]: now,
       });
-    });
-  } catch (error) {
-    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
-  }
-};
-
-export const markPlayerOffline = async (roomId: string, playerId: string): Promise<void> => {
-  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
-
-  try {
-    const room = await getRoom(roomId);
-    if (!room?.isActive || !room.players[playerId]) {
-      return;
-    }
-
-    await updateDoc(roomRef, {
-      [`players.${playerId}.isOnline`]: false,
-      [`players.${playerId}.lastSeen`]: currentTimestamp(),
     });
   } catch (error) {
     handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
@@ -1112,6 +1083,7 @@ export const createRoom = async (
     isCaptain: true,
     isBot: false,
     isOnline: true,
+    isBotControlled: false,
     lastSeen: now,
     score: 0,
     isOut: false,
@@ -1177,6 +1149,7 @@ export const joinRoom = async (
         isCaptain: (team === 'A' ? teamACount : teamBCount) === 0,
         isBot: false,
         isOnline: true,
+        isBotControlled: false,
         lastSeen: now,
         score: 0,
         isOut: false,
@@ -1301,6 +1274,7 @@ export const addAiPlayer = async (roomId: string, team: TeamId): Promise<void> =
     isCaptain: orderInTeam === 0,
     isBot: true,
     isOnline: true,
+    isBotControlled: false,
     lastSeen: now,
     score: 0,
     isOut: false,
@@ -1455,7 +1429,10 @@ export const chooseTossSide = async (
       if (room.status !== GameStatus.TOSS) throw new Error('Toss is not active');
 
       const selectedBy = room.gameState.toss.selectedBy ?? 'A';
-      assertCaptain(room.players[playerId], selectedBy, 'choose toss side');
+      const captain = assertCaptain(room.players[playerId], selectedBy, 'choose toss side');
+      if (captain.isBot || captain.isBotControlled) {
+        throw new Error('Automated captain cannot choose manually');
+      }
 
       if (room.gameState.toss.choice || room.gameState.toss.tossCompleted) {
         throw new Error('Toss side already selected');
@@ -1556,8 +1533,8 @@ export const resolveAiTossDecision = async (
       if (room.gameState.toss.decision) throw new Error('Bat or bowl already selected');
 
       const winnerCaptain = getCaptain(room.players, winnerTeam);
-      if (!winnerCaptain?.isBot) {
-        throw new Error('Winning team is not controlled by AI');
+      if (!winnerCaptain || (!winnerCaptain.isBot && !winnerCaptain.isBotControlled)) {
+        throw new Error('Winning team is not controlled by automation');
       }
 
       const decision = chooseAiTossDecision();
@@ -1607,7 +1584,9 @@ export const chooseTossDecision = async (
       if (room.gameState.toss.decision) throw new Error('Bat or bowl already selected');
 
       const captain = assertCaptain(room.players[playerId], winnerTeam, 'choose bat or bowl');
-      if (captain.isBot) throw new Error('AI captain cannot choose manually');
+      if (captain.isBot || captain.isBotControlled) {
+        throw new Error('Automated captain cannot choose manually');
+      }
 
       const battingTeam = decision === 'bat' ? winnerTeam : otherTeam(winnerTeam);
       const players = resetPlayersForPreMatch(room.players);
@@ -1635,10 +1614,52 @@ export const chooseTossDecision = async (
   }
 };
 
+export const resolveAutomatedTossChoice = async (
+  roomId: string,
+  playerId: string
+): Promise<void> => {
+  const roomRef = doc(db, ROOMS_COLLECTION, roomId);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(roomRef);
+      if (!snap.exists()) throw new Error('Room not found');
+
+      const room = normalizeRoomData({ id: snap.id, ...snap.data() } as Room);
+      if (room.status !== GameStatus.TOSS) throw new Error('Toss is not active');
+
+      assertHost(room, playerId, 'resolve the automated toss choice');
+
+      const selectedBy = room.gameState.toss.selectedBy ?? 'A';
+      if (room.gameState.toss.choice || room.gameState.toss.tossCompleted) {
+        return;
+      }
+
+      const captain = getCaptain(room.players, selectedBy);
+      if (!captain || (!captain.isBot && !captain.isBotControlled)) {
+        throw new Error('Selected captain is not controlled by automation');
+      }
+
+      const choice: TossChoice = Math.random() < 0.5 ? 'heads' : 'tails';
+      transaction.update(roomRef, {
+        'gameState.toss.selectedBy': selectedBy,
+        'gameState.toss.choice': choice,
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, 'update', `${ROOMS_COLLECTION}/${roomId}`);
+  }
+};
+
+interface SubmitSelectionOptions {
+  automated?: boolean;
+}
+
 export const submitSelection = async (
   roomId: string,
   playerId: string,
-  selection: number
+  selection: number,
+  options: SubmitSelectionOptions = {}
 ): Promise<void> => {
   const roomRef = doc(db, ROOMS_COLLECTION, roomId);
 
@@ -1665,6 +1686,15 @@ export const submitSelection = async (
 
       const player = room.players[playerId];
       if (!player || player.selection !== null) {
+        return;
+      }
+
+      const automatedPlayer = player.isBot || player.isBotControlled;
+      if (options.automated) {
+        if (!automatedPlayer) {
+          return;
+        }
+      } else if (automatedPlayer || !player.isOnline) {
         return;
       }
 

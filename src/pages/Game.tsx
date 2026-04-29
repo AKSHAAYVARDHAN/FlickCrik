@@ -40,10 +40,10 @@ import {
   joinRoom,
   kickPlayer,
   leaveRoom,
-  markPlayerOffline,
   PLAYER_HEARTBEAT_INTERVAL_MS,
   reconcileRoomLifecycle,
   makeCaptain,
+  resolveAutomatedTossChoice,
   resolveAiTossDecision,
   returnPlayerToLobby,
   startMatch,
@@ -133,6 +133,10 @@ function createAnnouncementData(room: Room, me: Player): AnnouncementData {
 function formatCaptainName(player: Player | null): string {
   if (!player) return 'Waiting';
   return player.isBot ? 'AI Bot' : player.name;
+}
+
+function isAutomatedPlayer(player: Player | null | undefined): boolean {
+  return Boolean(player && (player.isBot || player.isBotControlled));
 }
 
 function getViewForRoom(room: Room | null, playerId: string | null | undefined): GameView {
@@ -700,6 +704,7 @@ function TeamLobbyCard({
                   {player.id === myId ? <Badge tone="zinc">You</Badge> : null}
                   {!player.isBot && player.id === hostId ? <Badge tone="zinc">Host</Badge> : null}
                   {!player.isBot && !player.isOnline ? <Badge tone="red">Offline</Badge> : null}
+                  {!player.isBot && player.isBotControlled ? <Badge tone="yellow" icon={Bot}>Bot Playing</Badge> : null}
                 </div>
               </div>
 
@@ -771,6 +776,7 @@ export default function Game() {
   const [kickTarget, setKickTarget] = useState<Player | null>(null);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const automatedTossChoiceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tossDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aiDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const matchResultPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1073,8 +1079,8 @@ export default function Game() {
     if (!batter || !bowler) return;
 
     const needsBotMove =
-      (batter.isBot && batter.selection === null) ||
-      (bowler.isBot && bowler.selection === null);
+      (isAutomatedPlayer(batter) && batter.selection === null) ||
+      (isAutomatedPlayer(bowler) && bowler.selection === null);
 
     if (!needsBotMove) {
       if (botTimerRef.current) clearTimeout(botTimerRef.current);
@@ -1087,22 +1093,24 @@ export default function Game() {
     botTimerRef.current = setTimeout(() => {
       const updates: Promise<void>[] = [];
 
-      if (batter.isBot && batter.selection === null) {
+      if (isAutomatedPlayer(batter) && batter.selection === null) {
         updates.push(
           submitSelection(
             roomId,
             batter.id,
-            aiPick('batter', room.gameState.ballHistory || [], batter.id)
+            aiPick('batter', room.gameState.ballHistory || [], batter.id),
+            { automated: true }
           )
         );
       }
 
-      if (bowler.isBot && bowler.selection === null) {
+      if (isAutomatedPlayer(bowler) && bowler.selection === null) {
         updates.push(
           submitSelection(
             roomId,
             bowler.id,
-            aiPick('bowler', room.gameState.ballHistory || [], bowler.id)
+            aiPick('bowler', room.gameState.ballHistory || [], bowler.id),
+            { automated: true }
           )
         );
       }
@@ -1220,15 +1228,28 @@ export default function Game() {
   useEffect(() => {
     if (!roomId || !resolvedPlayerId || !room?.isActive || !hasResolvedPlayerInRoom) return;
 
-    const handlePageHide = (event: PageTransitionEvent) => {
-      if (event.persisted || roomExitHandledRef.current) return;
-      void markPlayerOffline(roomId, resolvedPlayerId).catch((error) => {
-        console.warn('Unable to mark the player offline during page unload.', error);
+    const syncPresence = () => {
+      if (document.visibilityState === 'hidden') return;
+      void heartbeatPlayerPresence(roomId, resolvedPlayerId).catch((error) => {
+        console.warn('Unable to refresh player presence.', error);
       });
     };
 
-    window.addEventListener('pagehide', handlePageHide);
-    return () => window.removeEventListener('pagehide', handlePageHide);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncPresence();
+      }
+    };
+
+    window.addEventListener('focus', syncPresence);
+    window.addEventListener('online', syncPresence);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', syncPresence);
+      window.removeEventListener('online', syncPresence);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [hasResolvedPlayerInRoom, resolvedPlayerId, room?.isActive, roomId]);
 
   useEffect(() => {
@@ -1278,7 +1299,50 @@ export default function Game() {
     myId &&
     (currentTurn.battingPlayerId === myId || currentTurn.bowlingPlayerId === myId)
   );
+  const hasManualTurnControl = Boolean(isMyTurn && me?.isOnline && !me?.isBotControlled);
   const iAmBatting = Boolean(currentTurn && myId && currentTurn.battingPlayerId === myId);
+
+  useEffect(() => {
+    if (automatedTossChoiceTimerRef.current) clearTimeout(automatedTossChoiceTimerRef.current);
+
+    if (
+      !room ||
+      !roomId ||
+      !myId ||
+      !isHost ||
+      room.status !== GameStatus.TOSS ||
+      room.gameState.toss.tossCompleted ||
+      room.gameState.toss.choice
+    ) {
+      return;
+    }
+
+    const selectedCaptain = (Object.values(room.players) as Player[]).find(
+      (player) => player.team === (room.gameState.toss.selectedBy ?? 'A') && player.isCaptain
+    );
+    if (!isAutomatedPlayer(selectedCaptain)) {
+      return;
+    }
+
+    automatedTossChoiceTimerRef.current = setTimeout(() => {
+      void resolveAutomatedTossChoice(roomId, myId).catch((error) => {
+        console.error(error);
+      });
+    }, AI_TOSS_DECISION_DELAY_MS);
+
+    return () => {
+      if (automatedTossChoiceTimerRef.current) clearTimeout(automatedTossChoiceTimerRef.current);
+    };
+  }, [
+    isHost,
+    myId,
+    room?.gameState.toss.choice,
+    room?.gameState.toss.selectedBy,
+    room?.gameState.toss.tossCompleted,
+    room?.players,
+    room?.status,
+    roomId,
+  ]);
 
   useEffect(() => {
     if (tossDecisionTimerRef.current) clearTimeout(tossDecisionTimerRef.current);
@@ -1342,7 +1406,7 @@ export default function Game() {
     const winningCaptain = (Object.values(room.players) as Player[]).find(
       (player) => player.team === room.gameState.toss.winnerTeam && player.isCaptain
     );
-    if (!winningCaptain?.isBot) {
+    if (!isAutomatedPlayer(winningCaptain)) {
       return;
     }
 
@@ -1614,7 +1678,7 @@ export default function Game() {
   };
 
   const handleSelect = (value: number) => {
-    if (!roomId || !myId || !isMyTurn || me?.selection !== null) return;
+    if (!roomId || !myId || !hasManualTurnControl || me?.selection !== null) return;
     void submitSelection(roomId, myId, value);
   };
 
@@ -2197,10 +2261,12 @@ export default function Game() {
             <div className="space-y-3.5 xl:space-y-4">
               <Card className="panel-section rounded-lg p-3.5 sm:p-4">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-2.5">
-                  {isMyTurn ? (
+                  {hasManualTurnControl ? (
                     <Badge tone="zinc">
                       {iAmBatting ? 'You are batting' : 'You are bowling'}
                     </Badge>
+                  ) : isMyTurn && me?.isBotControlled ? (
+                    <Badge tone="yellow" icon={Bot}>Bot Playing</Badge>
                   ) : (
                     <Badge tone="zinc">Spectating</Badge>
                   )}
@@ -2215,7 +2281,7 @@ export default function Game() {
                       >
                         <Badge tone="green">Locked in</Badge>
                       </motion.div>
-                    ) : isMyTurn ? (
+                    ) : hasManualTurnControl ? (
                       <motion.div
                         key="pick"
                         animate={{ opacity: [1, 0.45, 1] }}
@@ -2223,12 +2289,21 @@ export default function Game() {
                       >
                         <Badge tone="zinc">Pick a number or Dot</Badge>
                       </motion.div>
+                    ) : isMyTurn && me?.isBotControlled ? (
+                      <motion.div
+                        key="bot-cover"
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0 }}
+                      >
+                        <Badge tone="yellow" icon={Bot}>Bot is covering your turn</Badge>
+                      </motion.div>
                     ) : null}
                   </AnimatePresence>
                 </div>
                 <GameControls
                   onSelect={handleSelect}
-                  disabled={!isMyTurn || me?.selection !== null}
+                  disabled={!hasManualTurnControl || me?.selection !== null}
                   selection={me?.selection ?? null}
                 />
               </Card>
