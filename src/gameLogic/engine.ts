@@ -184,6 +184,77 @@ function startNextInnings(
   });
 }
 
+function buildMatchResultSubtitle(room: Room, winner: TeamId | 'TIE' | null): string {
+  if (winner === 'TIE') {
+    return 'The match is tied';
+  }
+
+  if (winner) {
+    return `${getTeamName(room, winner)} win the match`;
+  }
+
+  return 'Match complete';
+}
+
+function buildMatchResultTitle(winner: TeamId | 'TIE' | null): string {
+  return winner === 'TIE' ? 'Match Tied' : 'Match Result';
+}
+
+function finishMatch(
+  room: Room,
+  nextGameState: GameState,
+  nextPlayers: Record<string, Player>,
+  {
+    battingTeam,
+    batterId,
+    bowlerId,
+    overNumber,
+    ballInOver,
+    detail,
+  }: {
+    battingTeam: TeamId;
+    batterId: string;
+    bowlerId: string;
+    overNumber: number;
+    ballInOver: number;
+    detail?: string;
+  }
+) {
+  nextGameState.status = GameStatus.FINISHED;
+  nextGameState.over = true;
+
+  const summary = buildMatchSummary(nextPlayers, {
+    ...nextGameState,
+    winner: null,
+  });
+
+  nextGameState.winner = summary.winner;
+  nextGameState.teamSummary = summary.teamSummary;
+  nextGameState.playerStats = summary.playerStats;
+  nextGameState.mvp = summary.mvp;
+  nextGameState.finishedAt = Date.now();
+  nextGameState.currentBatterId = null;
+  nextGameState.currentBowlerId = null;
+  syncCurrentTurn(nextGameState);
+
+  pushMatchEvent(nextGameState, {
+    type: 'match_result',
+    innings: nextGameState.currentInnings,
+    overNumber,
+    ballInOver,
+    title: buildMatchResultTitle(summary.winner),
+    subtitle: buildMatchResultSubtitle(room, summary.winner),
+    detail:
+      detail ??
+      (summary.winner === 'TIE'
+        ? `${getTeamName(room, battingTeam)} finish level on ${nextGameState.teamScores[battingTeam]}`
+        : `${getTeamName(room, battingTeam)} finish on ${nextGameState.teamScores[battingTeam]}`),
+    batterId,
+    bowlerId,
+    nextPlayerId: null,
+  });
+}
+
 export const processTurn = (room: Room): Partial<Room> | null => {
   const { gameState, players } = room;
   const currentBatterId = gameState.currentBatterId ?? gameState.currentTurn?.battingPlayerId ?? null;
@@ -296,37 +367,12 @@ export const processTurn = (room: Room): Partial<Room> | null => {
         startNextInnings(room, nextGameState, nextPlayers, nextBattingTeam);
       } else {
         nextStatus = GameStatus.FINISHED;
-        nextGameState.status = GameStatus.FINISHED;
-        nextGameState.over = true;
-        const summary = buildMatchSummary(nextPlayers, nextGameState);
-        nextGameState.winner = summary.winner;
-        nextGameState.teamSummary = summary.teamSummary;
-        nextGameState.playerStats = summary.playerStats;
-        nextGameState.mvp = summary.mvp;
-        nextGameState.finishedAt = Date.now();
-        nextGameState.currentBatterId = null;
-        nextGameState.currentBowlerId = null;
-        syncCurrentTurn(nextGameState);
-
-        pushMatchEvent(nextGameState, {
-          type: 'match_result',
-          innings: nextGameState.currentInnings,
-          overNumber,
-          ballInOver,
-          title: 'Match Result',
-          subtitle:
-            summary.winner === 'TIE'
-              ? 'The match is tied'
-              : summary.winner
-                ? `${getTeamName(room, summary.winner)} win the match`
-                : 'Match complete',
-          detail:
-            summary.winner === 'TIE'
-              ? undefined
-              : `${getTeamName(room, battingTeam)} finish on ${nextGameState.teamScores[battingTeam]}`,
+        finishMatch(room, nextGameState, nextPlayers, {
+          battingTeam,
           batterId: currentBatterId,
           bowlerId: currentBowlerId,
-          nextPlayerId: null,
+          overNumber,
+          ballInOver,
         });
       }
     }
@@ -340,37 +386,13 @@ export const processTurn = (room: Room): Partial<Room> | null => {
       nextGameState.teamScores[battingTeam] >= nextGameState.target
     ) {
       nextStatus = GameStatus.FINISHED;
-      nextGameState.status = GameStatus.FINISHED;
-      nextGameState.over = true;
-      const summary = buildMatchSummary(nextPlayers, {
-        ...nextGameState,
-        winner: battingTeam,
-      });
-      nextGameState.winner = summary.winner;
-      nextGameState.teamSummary = summary.teamSummary;
-      nextGameState.playerStats = summary.playerStats;
-      nextGameState.mvp = summary.mvp;
-      nextGameState.finishedAt = Date.now();
-      nextGameState.currentBatterId = null;
-      nextGameState.currentBowlerId = null;
-      syncCurrentTurn(nextGameState);
-
-      pushMatchEvent(nextGameState, {
-        type: 'match_result',
-        innings: nextGameState.currentInnings,
-        overNumber,
-        ballInOver,
-        title: 'Match Result',
-        subtitle:
-          summary.winner === 'TIE'
-            ? 'The match is tied'
-            : summary.winner
-              ? `${getTeamName(room, summary.winner)} win the match`
-              : 'Match complete',
-        detail: `${getTeamName(room, battingTeam)} chased down ${nextGameState.target}`,
+      finishMatch(room, nextGameState, nextPlayers, {
+        battingTeam,
         batterId: currentBatterId,
         bowlerId: currentBowlerId,
-        nextPlayerId: null,
+        overNumber,
+        ballInOver,
+        detail: `${getTeamName(room, battingTeam)} chased down ${nextGameState.target}`,
       });
     }
   }

@@ -41,6 +41,10 @@ const MAX_PLAYERS = 12;
 export const PLAYER_HEARTBEAT_INTERVAL_MS = 3000;
 export const PLAYER_OFFLINE_THRESHOLD_MS = 30000;
 
+type RoomUpdate = Partial<Omit<Room, 'gameState'>> & {
+  gameState?: Partial<GameState>;
+};
+
 function handleFirestoreError(error: any, operationType: any, path: string | null): never {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
@@ -73,7 +77,7 @@ function flattenObject(obj: Record<string, any>, prefix = ''): Record<string, an
   return flat;
 }
 
-function flattenRoomUpdate(updates: Partial<Room>): Record<string, any> {
+function flattenRoomUpdate(updates: RoomUpdate): Record<string, any> {
   const flat: Record<string, any> = {};
 
   if (updates.players) {
@@ -105,7 +109,7 @@ function flattenRoomUpdate(updates: Partial<Room>): Record<string, any> {
   return flat;
 }
 
-function buildRoomDocumentUpdate(updates: Partial<Room>): Record<string, any> {
+function buildRoomDocumentUpdate(updates: RoomUpdate): Record<string, any> {
   const directUpdate: Record<string, any> = {};
 
   if (updates.players) {
@@ -249,7 +253,7 @@ function makeEndedGameState(): GameState {
   };
 }
 
-function buildExpiredRoomUpdate(): Partial<Room> {
+function buildExpiredRoomUpdate(): RoomUpdate {
   return {
     status: GameStatus.ENDED,
     isActive: false,
@@ -758,7 +762,7 @@ function buildRoomAfterPlayerRemoval(
   removedPlayerId: string,
   nextPlayers: Record<string, Player>,
   nextHostId: string | null
-): Partial<Room> {
+): RoomUpdate {
   if (room.status === GameStatus.LOBBY) {
     return {
       hostId: nextHostId!,
@@ -925,7 +929,7 @@ function buildRoomAfterPlayerRemoval(
   };
 }
 
-function applyRoomUpdateLocally(room: Room, updates: Partial<Room>): Room {
+function applyRoomUpdateLocally(room: Room, updates: RoomUpdate): Room {
   return normalizeRoomData({
     ...room,
     ...updates,
@@ -943,7 +947,7 @@ function applyRoomUpdateLocally(room: Room, updates: Partial<Room>): Room {
 function buildRoomAfterBatchPlayerRemoval(
   room: Room,
   removedPlayerIds: string[]
-): Partial<Room> | null {
+): RoomUpdate | null {
   let workingRoom = room;
   let changed = false;
 
@@ -995,7 +999,7 @@ function buildPresenceLifecycleUpdate(
   room: Room,
   now = currentTimestamp(),
   options: PresenceLifecycleOptions = {}
-): Partial<Room> | null {
+): RoomUpdate | null {
   if (!room.isActive) {
     return null;
   }
@@ -1818,7 +1822,7 @@ export const submitSelection = async (
 
 export const updateRoomState = async (
   roomId: string,
-  updates: Partial<Room>
+  updates: RoomUpdate
 ): Promise<void> => {
   try {
     const flat = flattenRoomUpdate(updates);

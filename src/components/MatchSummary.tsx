@@ -38,8 +38,8 @@ function winnerHeadline(room: Room) {
 
   if (winner === 'TIE') {
     return {
-      badge: 'Match Draw',
-      title: 'Match Draw',
+      badge: 'Match Tied',
+      title: 'Match Tied',
       subtitle: 'Both sides finished level after a tense finish.',
       tone: 'zinc' as const,
       glowClass: 'from-white/12 via-white/5 to-transparent',
