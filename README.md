@@ -6,7 +6,7 @@
 
 ## 🚀 Live Demo
 
-👉 https://flickcrik.vercel.app *(update after deployment)*
+👉 https://flick-crik.vercel.app/
 
 ---
 
