@@ -1,94 +1,183 @@
-# 🎮 FlickCrik — Flick. Hit. Win.
+<div align="center">
 
-**FlickCrik** is a real-time multiplayer web game inspired by the classic hand cricket game. Play with your friends, compete in teams, and enjoy a fast-paced digital cricket experience directly in your browser.
+# 🎮 FlickCrik
 
----
+### *Flick. Hit. Win.*
 
-## 🚀 Live Demo
+A real-time multiplayer Hand Cricket game built with **React, TypeScript, Firebase, and Tailwind CSS**.
 
-👉 https://flick-crik.vercel.app/
+Play with friends, challenge an AI opponent, and enjoy a seamless multiplayer cricket experience directly from your browser.
 
----
+🌐 **Live Demo:** https://flick-crik.vercel.app/
 
-## 🧠 Features
-
-* ⚡ **Real-time Multiplayer**
-
-  * Create a room and invite friends instantly
-  * Join using room code
-
-* 🏏 **Classic Hand Cricket Gameplay**
-
-  * Batting vs Bowling system
-  * Runs, wickets, innings logic
-
-* 🧑‍🤝‍🧑 **Team Mode**
-
-  * Split into Team A vs Team B
-  * Multiple players with turn rotation
-
-* 🪙 **Coin Toss System**
-
-  * Toss to decide batting/bowling
-  * Toss result popup for clarity
-
-* 🔁 **Innings System**
-
-  * First innings + Second innings
-  * Target and chase system
-
-* 🤖 **AI Bot Support**
-
-  * Play solo or fill missing players
-
-* 💬 **Live Chat**
-
-  * Chat with players during gameplay
-  * Auto cleanup of old messages
-
-* 🎨 **Modern UI**
-
-  * Dark theme
-  * Smooth animations
-  * Responsive layout
+</div>
 
 ---
 
-## 🛠️ Tech Stack
+# 📸 Screenshots
 
-* **Frontend:** React (Vite)
-* **Styling:** Tailwind CSS
-* **Backend / Realtime:** Firebase (Firestore)
-* **Hosting:** Vercel
+| Home Screen | Match Lobby |
+|-------------|-------------|
+| <img width="1915" height="1091" alt="image" src="https://github.com/user-attachments/assets/0e4181b0-4af5-47a6-992e-6abf512ebb87" /> | <img width="1893" height="1083" alt="image" src="https://github.com/user-attachments/assets/2eb3bff4-b731-4b69-8449-2854824eb879" /> |
+
+| Gameplay | Match Summary |
+|----------|---------------|
+| <img width="1895" height="1091" alt="image" src="https://github.com/user-attachments/assets/322f00fc-8c7e-4791-b7f5-69404460cb80" /> | <img width="1892" height="1078" alt="image" src="https://github.com/user-attachments/assets/0c52fd47-e1cb-4da8-9aa6-f6e5c6e15402" /> |
 
 ---
 
-## 📁 Project Structure
+# 🎥 Gameplay Demo
 
-```bash
+```md
+https://github.com/user-attachments/assets/5d806661-cbc6-441c-b18b-37b848863f18
+```
+
+---
+
+# 📖 About FlickCrik
+
+FlickCrik is a real-time multiplayer web game inspired by the classic Hand Cricket game.
+
+The project focuses on creating a smooth multiplayer experience where players can create rooms, invite friends, play live matches, or compete against an AI opponent. Throughout development, special attention was given to real-time synchronization, responsive design, and creating a polished user experience.
+
+---
+
+# ✨ Features
+
+## 🏏 Gameplay
+
+- Classic Hand Cricket gameplay
+- Batting & Bowling system
+- Dot Ball mechanics
+- Wicket logic
+- Multiple innings
+- Target & chase system
+- Match tie support
+
+---
+
+## 👥 Multiplayer
+
+- Real-time multiplayer gameplay
+- Private room creation
+- Room code joining
+- Invite link sharing
+- Team-based matches
+- Live player synchronization
+
+---
+
+## 👑 Room Management
+
+- Host controls
+- Team Captain system
+- Host transfer
+- Captain transfer
+- Kick Player
+- End Room
+- Exit Room
+- Automatic room expiration
+
+---
+
+## 🤖 AI Features
+
+- Play against AI
+- AI Bot takeover for disconnected players
+- Automatic player reconnection
+
+---
+
+## 💬 Social Features
+
+- Live in-game chat
+- Auto-cleanup of old messages
+
+---
+
+## 📊 Match Features
+
+- Coin Toss
+- Bat / Bowl selection
+- Innings announcements
+- Match event popups
+- Match summary
+- Player statistics
+- MVP selection
+
+---
+
+## 🎨 UI / UX
+
+- Modern dark theme
+- Fully responsive
+- Smooth animations
+- Professional game interface
+- Mobile friendly
+
+---
+
+# 💡 Challenges Solved
+
+While building FlickCrik, I worked on several real-world multiplayer challenges including:
+
+- Real-time multiplayer synchronization
+- Player connection & reconnection handling
+- Ghost player cleanup
+- AI takeover for disconnected players
+- Room lifecycle management
+- Event queue system
+- Match state synchronization
+- Multiplayer edge-case handling
+- Responsive UI/UX improvements
+
+---
+
+# 🛠 Tech Stack
+
+| Category | Technology |
+|----------|------------|
+| Frontend | React |
+| Language | TypeScript |
+| Build Tool | Vite |
+| Styling | Tailwind CSS |
+| Backend | Firebase |
+| Database | Firestore |
+| Authentication | Firebase Auth |
+| Hosting | Vercel |
+
+---
+
+# 🏗 Project Structure
+
+```text
 src/
-  components/
-  pages/
-  firebase/
-  gameLogic/
-  hooks/
-  utils/
+│
+├── components/
+├── pages/
+├── firebase/
+├── gameLogic/
+├── hooks/
+├── services/
+├── utils/
+└── types/
 ```
 
 ---
 
-## ⚙️ Setup & Installation
+# 🚀 Getting Started
 
-### 1. Clone the repo
+## Clone the repository
 
 ```bash
-git clone https://github.com/your-username/flickcrik.git
-cd flickcrik
+git clone https://github.com/YOUR_USERNAME/FlickCrik.git
+
+cd FlickCrik
 ```
 
 ---
 
-### 2. Install dependencies
+## Install dependencies
 
 ```bash
 npm install
@@ -96,22 +185,27 @@ npm install
 
 ---
 
-### 3. Setup Environment Variables
+## Environment Variables
 
-Create a `.env` file in root:
+Create a `.env` file.
 
 ```env
-VITE_FIREBASE_API_KEY=your_key
-VITE_FIREBASE_AUTH_DOMAIN=your_domain
-VITE_FIREBASE_PROJECT_ID=your_project_id
-VITE_FIREBASE_STORAGE_BUCKET=your_bucket
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
-VITE_FIREBASE_APP_ID=your_app_id
+VITE_FIREBASE_API_KEY=
+
+VITE_FIREBASE_AUTH_DOMAIN=
+
+VITE_FIREBASE_PROJECT_ID=
+
+VITE_FIREBASE_STORAGE_BUCKET=
+
+VITE_FIREBASE_MESSAGING_SENDER_ID=
+
+VITE_FIREBASE_APP_ID=
 ```
 
 ---
 
-### 4. Run locally
+## Run the project
 
 ```bash
 npm run dev
@@ -119,55 +213,53 @@ npm run dev
 
 ---
 
-## 🚀 Deployment
+# 🚀 Deployment
 
-Deployed using **Vercel**.
+The project is deployed using **Vercel**.
 
-Steps:
+Live Website
 
-1. Push code to GitHub
-2. Import repo in Vercel
-3. Add environment variables
-4. Deploy
+https://flick-crik.vercel.app/
 
 ---
 
-## ⚠️ Notes
+# 🤝 Contributing
 
-* Clear old Firebase rooms if schema changes
-* Ensure Firebase rules allow proper access
-* Works best in modern browsers
+Contributions, ideas, and suggestions are always welcome.
 
----
+If you'd like to improve FlickCrik:
 
-## 🔮 Future Improvements
-
-* 🏆 Leaderboard system
-* 🎮 Match history & stats
-* 🔊 Sound effects
-* 📱 Mobile optimization
-* 🌍 Public matchmaking
+1. Fork the repository
+2. Create a new branch
+3. Commit your changes
+4. Open a Pull Request
 
 ---
 
-## 🤝 Contributing
+# 👨‍💻 Developer
 
-Feel free to fork and improve the project!
+## Akshaay Vardhan
 
----
-
-## 📜 License
-
-This project is open-source and available under the MIT License.
+Passionate about building real-time web applications and creating engaging user experiences through technology.
 
 ---
 
-## 👨‍💻 Author
+# ⭐ Support
 
-**Akshaay Vardhan**
+If you enjoyed this project,
+
+⭐ Star this repository
+
+and share your feedback!
+
+It really helps and motivates me to build more projects.
 
 ---
 
-## ⭐ Support
+<div align="center">
 
-If you like this project, consider giving it a ⭐ on GitHub!
+Made with ❤️ using React + Firebase
+
+**Flick. Hit. Win.**
+
+</div>
